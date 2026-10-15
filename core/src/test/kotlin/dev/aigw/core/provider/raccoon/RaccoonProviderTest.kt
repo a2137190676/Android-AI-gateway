@@ -113,6 +113,21 @@ class RaccoonProviderTest {
     }
 
     @Test
+    fun `max_completion_tokens 映射为 max_tokens`() {
+        val obj = prepare(
+            """{"model":"m","max_completion_tokens":256,"messages":[{"role":"user","content":"hi"}]}""",
+        )
+        assertEquals(256L, obj.get("max_tokens").asLong)
+        assertTrue(!obj.has("max_completion_tokens"), "上游不认 max_completion_tokens")
+    }
+
+    @Test
+    fun `同时给两个上限时以 max_tokens 为准`() {
+        val obj = prepare("""{"model":"m","max_tokens":64,"max_completion_tokens":256,"messages":[]}""")
+        assertEquals(64L, obj.get("max_tokens").asLong)
+    }
+
+    @Test
     fun `采样参数同名保留且 stream 保留`() {
         val obj = prepare(
             """{"model":"m","temperature":0.7,"top_p":0.9,"frequency_penalty":0.1,"presence_penalty":0.2,"stream":true,"stop":["x"]}""",

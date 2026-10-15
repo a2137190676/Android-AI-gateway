@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -41,6 +42,14 @@ class SseStreamTerminationTest {
         append("\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"usage\":null}\n\n")
         append("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"m\",")
         append("\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n")
+    }
+
+    /** 只有图片、没有文本（图像型号可能如此）：不能判成空回复。 */
+    private val upstreamImagesOnly = buildString {
+        append("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"m\",")
+        append("\"choices\":[{\"index\":0,\"delta\":{\"images\":[{\"index\":0,\"type\":\"image_url\",")
+        append("\"image_url\":{\"url\":\"data:image/png;base64,AAAA\"}}]},\"finish_reason\":null}],\"usage\":null}\n\n")
+        append("data: [DONE]\n\n")
     }
 
     private inner class FramingProvider(private val body: String) : Provider {
@@ -115,6 +124,16 @@ class SseStreamTerminationTest {
             assertTrue(raw.contains("upstream_empty"), "零内容必须报 upstream_empty：$raw")
             assertEquals(1, raw.countOccurrences("[DONE]"), "实际流：$raw")
             assertTrue(raw.trimEnd().endsWith("[DONE]"), "实际流：$raw")
+        }
+    }
+
+    @Test
+    fun `只有图片的流不算空回复`() {
+        withServer(upstreamImagesOnly) { port ->
+            val raw = streamBody(port)
+            assertFalse(raw.contains("upstream_empty"), "纯图响应不得被判为空：$raw")
+            assertTrue(raw.contains("image_url"), "图片负载必须透传：$raw")
+            assertEquals(1, raw.countOccurrences("[DONE]"), "实际流：$raw")
         }
     }
 

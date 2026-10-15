@@ -926,9 +926,11 @@ class GatewayHttpServer(
         val usage = obj.objOrNull("usage")
         val content = delta?.stringOrNull("content").orEmpty()
         // 有实际负载才算「有内容」：纯 role/finish chunk 不算，
-        // 否则上游只回元数据时会被当成成功的空回复
+        // 否则上游只回元数据时会被当成成功的空回复。
+        // images 也算负载：图像型号可能只回图不回文本，漏了它会把纯图响应判成空并报错。
         val hasPayload = content.isNotEmpty() ||
             delta?.has("tool_calls") == true ||
+            delta?.has("images") == true ||
             !delta?.stringOrNull("reasoning_content").isNullOrEmpty()
         return ChunkInfo(
             usage = usage,

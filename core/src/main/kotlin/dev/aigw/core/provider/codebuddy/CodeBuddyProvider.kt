@@ -24,6 +24,7 @@ import dev.aigw.core.provider.ProviderModelCatalogView
 import dev.aigw.core.provider.ProviderTask
 import dev.aigw.core.provider.ProviderTaskListView
 import dev.aigw.core.provider.QuotaPack
+import dev.aigw.core.provider.StreamFailureChatCall
 import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
 import dev.aigw.core.util.arrayOrNull
@@ -139,6 +140,13 @@ class CodeBuddyProvider(
 
         val text = runCatching { stream.use { HttpSupport.readLimited(it) } }.getOrDefault("")
         conn.disconnect()
+        // 200 也可能是「HTTP 200 + 业务错误码」（与 Loomy 同形）：不校验会把真实错误
+        // 当成正常聚合结果，下游只会报「上游返回了空回复」，用户看不到真正原因。
+        val businessCode = runCatching { JsonParser.parseString(text).asJsonObject.get("code")?.asLong }
+            .getOrNull()
+        if (businessCode != null && businessCode != 0L) {
+            return StreamFailureChatCall(200, classify(200, text))
+        }
         return AggregatedChatCall(status, text)
     }
 

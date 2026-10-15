@@ -679,6 +679,7 @@ class RaccoonProvider(
  * - 字段名保持 OpenAI 标准（上游 v2 是 LiteLLM 兼容层，`max_tokens` 等标准名直接认；
  *   改名成 `max_new_tokens` 会被上游以 500 unexpected keyword argument 拒绝）；
  * - 保留 `max_tokens`/`temperature`/`top_p`/`frequency_penalty`/`presence_penalty`/`stop`；
+ *   新版 OpenAI 客户端的 `max_completion_tokens` 按同义映射到 `max_tokens`，否则会被静默丢弃；
  * - **强制 `stream:true`**（上游拒绝非流式），非流式由本类聚合；
  * - `tools` 原样映射，并带上 `tool_choice:"auto"`。
  *
@@ -689,7 +690,9 @@ internal fun prepareRaccoonBody(src: String): String {
     return JsonObject().apply {
         obj.stringOrNull("model")?.let { addProperty("model", it) }
         obj.arrayOrNull("messages")?.let { add("messages", it) }
-        obj.longOrNull("max_tokens")?.let { addProperty("max_tokens", it) }
+        // 新版 OpenAI 客户端发 max_completion_tokens：按同义映射，否则会被上游静默丢弃
+        (obj.longOrNull("max_tokens") ?: obj.longOrNull("max_completion_tokens"))
+            ?.let { addProperty("max_tokens", it) }
         obj.doubleOrNull("temperature")?.let { addProperty("temperature", it) }
         obj.doubleOrNull("top_p")?.let { addProperty("top_p", it) }
         obj.doubleOrNull("frequency_penalty")?.let { addProperty("frequency_penalty", it) }
