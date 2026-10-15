@@ -211,6 +211,16 @@ class CodeBuddyProvider(
                 else -> ProviderActionResult.unsupported(action)
             }
         }
+        // 企业账号没有个人成长体系：签到/成长/连签类调用上游必失败
+        // （`400 code 10001` 或 `403 growth system is only available for personal users`），
+        // 直接短路不发请求；企业额度走 billing 的 get-enterprise-user-usage。
+        if (credential != null && credential.enterpriseId.isNotEmpty()) {
+            return when (action) {
+                ACTION_CHECKIN, ACTION_TASKS ->
+                    ProviderActionResult.failure("企业账号没有个人成长体系（签到/任务仅个人账号可用）")
+                else -> ProviderActionResult.unsupported(action)
+            }
+        }
         return when (action) {
             ACTION_CHECKIN -> checkin(account)
             ACTION_TASKS -> growth(account)
@@ -522,6 +532,8 @@ class CodeBuddyProvider(
     override fun taskList(account: ProviderAccount): ProviderTaskListView? {
         val credential = parse(account) ?: return ProviderTaskListView(emptyList(), error = "凭证无法解析")
         if (regionOf(credential) == REGION_GLOBAL) return ProviderTaskListView(emptyList())
+        // 企业账号没有个人成长体系，不发请求（上游会回 403/10001）
+        if (credential.enterpriseId.isNotEmpty()) return ProviderTaskListView(emptyList())
         return try {
             val (status, body) = getJson("${chatBase(credential)}$PATH_GROWTH/tasks", billingHeaders(credential))
             if (status !in 200..299) {
@@ -636,33 +648,68 @@ class CodeBuddyProvider(
 
     // ------------------------------------------------------------------ 凭证
 
+    private val refreshLock = Any()
+
+    /**
+     * 最近一次成功刷新的凭证，按账号 uid 记录。
+     *
+     * 用 uid 而不是 refresh_token 作键：上游会轮换 refresh_token，旧值随即作废，
+     * 以旧值为键会查不到刚写入的缓存而重复刷新。
+     */
+    @Volatile
+    private var lastRefreshed: Map<String, Credential> = emptyMap()
+
+    /** 各账号最近一次刷新失败的秒级时间戳（按 uid），用于失败冷却。 */
+    @Volatile
+    private var lastRefreshFailedAt: Map<String, Long> = emptyMap()
+
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val credential = parse(account) ?: return null
         val nowSeconds = nowMillis() / 1000
         if (credential.expiresAt > 0 && credential.expiresAt - nowSeconds > skewSeconds) return null
         if (credential.refreshToken.isEmpty()) return null
-        return try {
-            val (status, text) = postJson(
-                "${chatBase(credential)}$PATH_TOKEN_REFRESH",
-                credential,
-                null,
-                refreshHeaders(credential),
-            )
-            if (status !in 200..299) return null
-            val data = envelopeData(text) ?: return null
-            val access = data.get("accessToken")?.asString.orEmpty()
-            if (access.isEmpty()) return null
-            val expiresIn = data.get("expiresIn")?.asLong ?: 0L
-            val refreshed = credential.copy(
-                accessToken = access,
-                refreshToken = data.get("refreshToken")?.asString.orEmpty().ifEmpty { credential.refreshToken },
-                domain = data.get("domain")?.asString.orEmpty().ifEmpty { credential.domain },
-                expiresAt = if (expiresIn > 0) nowSeconds + expiresIn else credential.expiresAt,
-            )
-            toProviderAccount(refreshed)
-        } catch (_: Exception) {
-            null
+        val uid = account.uid
+        synchronized(refreshLock) {
+            // 锁内复查：并发请求跨入同一临期窗口时，复用别的线程刚刷出的凭证，绝不重复刷新。
+            // 必须返回新凭证——返回 null 会让调用方拿旧 token 去请求（直接 401）。
+            val cached = lastRefreshed[uid]
+            if (cached != null && cached.expiresAt - nowSeconds > skewSeconds) {
+                return toProviderAccount(cached)
+            }
+            // 失败冷却：刷新失败后短时间内不再重打，否则 token 被吊销后会按请求频率轰炸端点。
+            val failedAt = lastRefreshFailedAt[uid]
+            if (failedAt != null && nowSeconds - failedAt < REFRESH_COOLDOWN_SECONDS) return null
+            return try {
+                val (status, text) = postJson(
+                    "${chatBase(credential)}$PATH_TOKEN_REFRESH",
+                    credential,
+                    null,
+                    refreshHeaders(credential),
+                )
+                if (status !in 200..299) return refreshFailed(uid, nowSeconds)
+                val data = envelopeData(text) ?: return refreshFailed(uid, nowSeconds)
+                val access = data.get("accessToken")?.asString.orEmpty()
+                if (access.isEmpty()) return refreshFailed(uid, nowSeconds)
+                val expiresIn = data.get("expiresIn")?.asLong ?: 0L
+                val refreshed = credential.copy(
+                    accessToken = access,
+                    refreshToken = data.get("refreshToken")?.asString.orEmpty().ifEmpty { credential.refreshToken },
+                    domain = data.get("domain")?.asString.orEmpty().ifEmpty { credential.domain },
+                    expiresAt = if (expiresIn > 0) nowSeconds + expiresIn else credential.expiresAt,
+                )
+                lastRefreshed = lastRefreshed + (uid to refreshed)
+                if (lastRefreshFailedAt.containsKey(uid)) lastRefreshFailedAt = lastRefreshFailedAt - uid
+                toProviderAccount(refreshed)
+            } catch (_: Exception) {
+                refreshFailed(uid, nowSeconds)
+            }
         }
+    }
+
+    /** 记录一次刷新失败并返回 null（调用方据此沿用旧凭证/除障）。 */
+    private fun refreshFailed(uid: String, nowSeconds: Long): ProviderAccount? {
+        lastRefreshFailedAt = lastRefreshFailedAt + (uid to nowSeconds)
+        return null
     }
 
     /**
@@ -1096,6 +1143,9 @@ class CodeBuddyProvider(
         const val REGION_CN = "cn"
         const val REGION_GLOBAL = "global"
 
+        /** 刷新失败后的冷却秒数：期间不再重打上游刷新端点。 */
+        const val REFRESH_COOLDOWN_SECONDS = 60L
+
         /** 会话指纹算不出来时的固定会话 ID（保持「同会话同值」，不用随机）。 */
         internal const val FALLBACK_CONVERSATION_ID = "00000000-0000-0000-0000-000000000000"
 
@@ -1292,7 +1342,28 @@ private fun normalizeCodeBuddyMessages(obj: JsonObject) {
         val message = runCatching { element.asJsonObject }.getOrNull() ?: continue
         if (message.get("role")?.asString == "developer") message.addProperty("role", "system")
     }
-    val first = messages.firstOrNull()?.let { runCatching { it.asJsonObject }.getOrNull() }
+
+    // 11153「the conversation must end with a user message」：工具结果之后紧跟 user 消息
+    // （Claude Code 的提醒、任务中途输入、工具图片）会被上游拒；中间插一条空 assistant 即可通过。
+    // Gson 的 JsonArray 没有 add(index, e)，所以新数组重建。
+    val rebuilt = JsonArray()
+    var prevRole: String? = null
+    for (element in messages) {
+        val role = runCatching { element.asJsonObject.get("role")?.asString }.getOrNull()
+        if (prevRole == "tool" && role == "user") {
+            rebuilt.add(
+                JsonObject().apply {
+                    addProperty("role", "assistant")
+                    addProperty("content", "")
+                },
+            )
+        }
+        rebuilt.add(element)
+        prevRole = role
+    }
+    obj.add("messages", rebuilt)
+
+    val first = rebuilt.firstOrNull()?.let { runCatching { it.asJsonObject }.getOrNull() }
     if (first != null && first.get("role")?.asString == "system") return
     val withSystem = JsonArray()
     withSystem.add(
@@ -1301,7 +1372,7 @@ private fun normalizeCodeBuddyMessages(obj: JsonObject) {
             addProperty("content", DEFAULT_SYSTEM_PROMPT)
         },
     )
-    for (element in messages) withSystem.add(element)
+    for (element in rebuilt) withSystem.add(element)
     obj.add("messages", withSystem)
 }
 

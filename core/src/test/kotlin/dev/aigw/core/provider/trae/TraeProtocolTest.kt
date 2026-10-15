@@ -114,6 +114,51 @@ class TraePayloadTest {
     fun `非法 JSON 原样返回`() {
         assertEquals("not json", TraePayload.prepare("not json"))
     }
+
+    @Test
+    fun `工具 schema 的同文档 dollar-ref 被内联展开`() {
+        val raw = """
+            {"messages":[],"tools":[{"type":"function","function":{"name":"f","parameters":{
+              "type":"object","properties":{"a":{"${'$'}ref":"#/${'$'}defs/Thing"}},
+              "${'$'}defs":{"Thing":{"type":"object","properties":{"x":{"type":"string"}}}}}}}]}
+        """.trimIndent()
+        val schema = parametersOf(prepare(raw))
+        val text = schema.toString()
+        assertFalse(text.contains("\$ref"), "不得再出现 ref：$text")
+        assertFalse(text.contains("\$defs"), "不得再出现 defs：$text")
+        // 被引用定义的内容已内联到属性 a
+        assertTrue(text.contains("\"x\""), "被引用定义应已内联：$text")
+    }
+
+    @Test
+    fun `循环 dollar-ref 不会无限展开`() {
+        // A -> B -> A；必须能正常返回，不能死循环/栈溢出
+        val raw = """
+            {"messages":[],"tools":[{"type":"function","function":{"name":"f","parameters":{
+              "type":"object","properties":{"a":{"${'$'}ref":"#/definitions/A"}},
+              "definitions":{
+                "A":{"type":"object","properties":{"b":{"${'$'}ref":"#/definitions/B"}}},
+                "B":{"type":"object","properties":{"a":{"${'$'}ref":"#/definitions/A"}}}}}}}]}
+        """.trimIndent()
+        val schema = parametersOf(prepare(raw))
+        assertTrue(schema.toString().isNotEmpty())
+    }
+
+    @Test
+    fun `解析不到的 dollar-ref 原样保留`() {
+        val raw = """
+            {"messages":[],"tools":[{"type":"function","function":{"name":"f","parameters":{
+              "type":"object","properties":{"a":{"${'$'}ref":"https://example.com/schema.json"}}}}}]}
+        """.trimIndent()
+        val schema = parametersOf(prepare(raw))
+        assertTrue(schema.toString().contains("example.com"), "外部引用应原样保留")
+    }
+
+    private fun parametersOf(prepared: JsonObject): JsonObject {
+        val fn = prepared.getAsJsonArray("tools")[0].asJsonObject.getAsJsonObject("function")
+        // parameters 已被序列化为字符串
+        return JsonParser.parseString(fn.get("parameters").asString).asJsonObject
+    }
 }
 
 class TraeSseParserTest {

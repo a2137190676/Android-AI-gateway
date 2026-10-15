@@ -134,4 +134,28 @@ class CodeBuddyPayloadTest {
         assertFalse(text.contains("x-anthropic-billing-header"))
         assertTrue(text.contains("Main branch (usually the base for PRs)"))
     }
+
+    @Test
+    fun `工具结果后紧跟用户消息时插入空 assistant`() {
+        // 上游回 400 11153「the conversation must end with a user message」
+        val messages = prepare(
+            """{"messages":[
+              {"role":"system","content":"s"},
+              {"role":"assistant","content":"","tool_calls":[{"id":"1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+              {"role":"tool","tool_call_id":"1","content":"ok"},
+              {"role":"user","content":"继续"}]}""",
+        ).getAsJsonArray("messages")
+        assertEquals(5, messages.size())
+        assertEquals("assistant", messages[3].asJsonObject.get("role").asString)
+        assertEquals("", messages[3].asJsonObject.get("content").asString)
+        assertEquals("user", messages[4].asJsonObject.get("role").asString)
+    }
+
+    @Test
+    fun `没有 tool 后接 user 时不插入`() {
+        val messages = prepare(
+            """{"messages":[{"role":"system","content":"s"},{"role":"tool","tool_call_id":"1","content":"ok"}]}""",
+        ).getAsJsonArray("messages")
+        assertEquals(2, messages.size())
+    }
 }
