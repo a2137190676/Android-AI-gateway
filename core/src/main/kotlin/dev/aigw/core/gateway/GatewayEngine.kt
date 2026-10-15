@@ -1361,11 +1361,15 @@ class GatewayEngine(
      */
     fun resolveCandidateRoutes(requested: String): List<Route> {
         val primary = resolveRoute(requested) ?: return emptyList()
+        // 开关关闭时**只**用首选路由：不得跨供应商转移。
+        // 此前只在下面「显式路由表」分支判了 enabled，启发式回退照跑，
+        // 导致界面上关了故障转移、实际仍会自动切到别的供应商。
+        if (!failoverSettings.enabled) return listOf(primary)
         val requestedModelKey = requested.trim().removePrefix("models/").trim()
         val configuredCandidates = failoverSettings.routes[requestedModelKey]
             ?: failoverSettings.routes[primary.model]
 
-        if (!configuredCandidates.isNullOrEmpty() && failoverSettings.enabled) {
+        if (!configuredCandidates.isNullOrEmpty()) {
             val list = ArrayList<Route>()
             // 按 priority 降序
             val sorted = configuredCandidates.sortedByDescending { it.priority }

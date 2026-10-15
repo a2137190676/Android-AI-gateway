@@ -126,7 +126,7 @@ private fun RetryComponent(
     onToggle: (Boolean) -> Unit,
     onOpenEdit: () -> Unit,
 ) {
-    SectionLabel("重试退避（单供应商内换号）")
+    SectionLabel("故障转移（单供应商内重试 + 跨供应商切换）")
     SectionCard(enterIndex = 1) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -137,7 +137,7 @@ private fun RetryComponent(
                 Text("启用故障转移", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "关闭后单请求只按「换号上限」轮账号，不退避、不跨供应商转移",
+                    text = "关闭后单请求只在本供应商内换号：不退避重试、也不切到其它供应商",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
