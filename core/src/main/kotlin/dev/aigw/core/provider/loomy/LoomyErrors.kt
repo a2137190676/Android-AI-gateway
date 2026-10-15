@@ -75,23 +75,53 @@ class LoomyApiException(
 
 object LoomyErrors {
 
-    /** 按 HTTP 状态码 + 响应体里的业务 code 判断错误类别。 */
+    /** 上游以英文原文标记、但状态码仍为 200 的会话失效信号。 */
+    private val SESSION_DEAD_MARKERS = listOf(
+        "token 已失效", "登录已失效", "session expired", "session is invalid",
+        "invalid session", "not logged in", "unauthorized",
+    )
+
+    /** 上游以英文原文标记的「账号级配额不足」信号。 */
+    private val QUOTA_MARKERS = listOf(
+        "insufficient credits", "insufficient credit", "not enough credit",
+        "credit exhausted", "quota exceeded",
+    )
+
+    /**
+     * 错误分类：**先看正文 marker、后看状态码**。
+     *
+     * 上游鉴权失败与部分业务错误回的是 **HTTP 200 + 业务码**，只看状态码会把失效账号
+     * 判成普通客户端错误——既不禁用也不冷却，问题被静默吃掉。参照实现
+     * （`multi2api/internal/loomy/errorclassifier.go`、`Patrick130306/loomy2api`）都按
+     * 「先正文、后状态码」的顺序分类，这里对齐。
+     */
     fun fromStatus(status: Int, body: String): LoomyErrorKind {
         val code = extractCode(body)
+        val lower = body.lowercase()
+
+        // 1) 正文 marker 优先：200 + 业务码 也能正确归类
+        if (code == LoomyConstants.CODE_TOKEN_INVALID || code == LoomyConstants.CODE_SESSION_INVALID) {
+            return LoomyErrorKind.SESSION_DEAD
+        }
+        if (SESSION_DEAD_MARKERS.any { lower.contains(it) || body.contains(it) }) {
+            return LoomyErrorKind.SESSION_DEAD
+        }
+        if (looksLikeQuota(body)) return LoomyErrorKind.QUOTA
+
+        // 2) 再看状态码
         return when {
-            status == 401 -> LoomyErrorKind.SESSION_DEAD
+            status == 401 || status == 403 -> LoomyErrorKind.SESSION_DEAD
             status == 404 -> LoomyErrorKind.NOT_FOUND
             status == 429 -> LoomyErrorKind.SOFT_RATE
             status in 500..599 -> LoomyErrorKind.SERVER
-            code == LoomyConstants.CODE_TOKEN_INVALID || code == LoomyConstants.CODE_SESSION_INVALID ->
-                LoomyErrorKind.SESSION_DEAD
-            looksLikeQuota(body) -> LoomyErrorKind.QUOTA
             else -> LoomyErrorKind.CLIENT
         }
     }
 
-    /** 上游对「积分不足」没有稳定错误码，按文案兜底识别。 */
+    /** 上游对「积分不足」没有稳定错误码，按文案兜底识别（中英双语）。 */
     private fun looksLikeQuota(body: String): Boolean {
+        val lower = body.lowercase()
+        if (QUOTA_MARKERS.any { lower.contains(it) }) return true
         val text = body.lowercase()
         return listOf("积分不足", "积分已用完", "余额不足", "额度不足", "额度已用完", "quota", "insufficient").any { text.contains(it) }
     }

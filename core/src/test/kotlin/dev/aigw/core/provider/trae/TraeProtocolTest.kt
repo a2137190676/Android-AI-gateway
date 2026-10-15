@@ -49,6 +49,15 @@ class TraePayloadTest {
     }
 
     @Test
+    fun `developer 角色改叫 system`() {
+        // SOLO 上游只认 system/assistant/user/tool；新版 OpenAI 客户端会发 developer
+        val out = prepare("""{"messages":[{"role":"developer","content":"d"},{"role":"user","content":"u"}]}""")
+        val messages = out.getAsJsonArray("messages")
+        assertEquals("system", messages[0].asJsonObject.get("role").asString)
+        assertEquals("user", messages[1].asJsonObject.get("role").asString)
+    }
+
+    @Test
     fun `tools 的 parameters 对象被序列化为字符串`() {
         val raw = """
             {"messages":[],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{}}}}]}

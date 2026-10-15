@@ -85,6 +85,10 @@ object TraePayload {
         for (element in messages) {
             val message = element as? JsonObject ?: continue
 
+            // SOLO 上游只认 system / assistant / user / tool，不认 `developer`。
+            // 新版 OpenAI 客户端（Claude Code / Codex）会发 developer 角色，不改写会被拒。
+            if (message.str("role") == "developer") message.addProperty("role", "system")
+
             if (message.str("role") == "assistant") {
                 rewriteAssistantToolCalls(message)
             }

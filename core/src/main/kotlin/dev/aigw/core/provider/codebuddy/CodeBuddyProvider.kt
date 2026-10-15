@@ -856,7 +856,13 @@ class CodeBuddyProvider(
         putAll(commonHeaders(credential))
         put("Authorization", "Bearer ${credential.accessToken}")
         if (credential.uid.isNotEmpty()) put("X-User-Id", credential.uid)
-        if (credential.enterpriseId.isNotEmpty()) put("X-Enterprise-Id", credential.enterpriseId)
+        if (credential.enterpriseId.isNotEmpty()) {
+            // 企业账号必须两个都带（与 billingHeaders 口径一致）：
+            // 官方客户端每个请求都同时发 X-Enterprise-Id 与 X-Tenant-Id；
+            // 只带一个时上游会按**个人账号**回答——模型目录/能力会退化成个人套餐。
+            put("X-Enterprise-Id", credential.enterpriseId)
+            put("X-Tenant-Id", credential.enterpriseId)
+        }
         if (credential.domain.isNotEmpty()) put("X-Domain", credential.domain)
         put("X-Product", "SaaS")
     }
@@ -891,7 +897,10 @@ class CodeBuddyProvider(
     private fun refreshHeaders(credential: Credential): Map<String, String> = buildMap {
         putAll(commonHeaders(credential))
         put("X-Refresh-Token", credential.refreshToken)
-        if (credential.enterpriseId.isNotEmpty()) put("X-Enterprise-Id", credential.enterpriseId)
+        if (credential.enterpriseId.isNotEmpty()) {
+            put("X-Enterprise-Id", credential.enterpriseId)
+            put("X-Tenant-Id", credential.enterpriseId)
+        }
         put("X-Auth-Refresh-Source", "workbuddy")
     }
 
