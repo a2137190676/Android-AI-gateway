@@ -48,6 +48,8 @@ class AntigravityProvider(
     private val apiBase: String = API_BASE,
     private val quotaBase: String = QUOTA_BASE,
     private val tokenEndpoint: String = TOKEN_ENDPOINT,
+    /** 运行时 UA 里的客户端版本；默认取官方清单的最新版（见 [AntigravityVersion]）。 */
+    private val clientVersion: () -> String = { AntigravityVersion.current() },
 ) : Provider, LoopbackOAuthSupport {
 
     override val id: String = ID
@@ -309,8 +311,22 @@ class AntigravityProvider(
     @Volatile
     private var lastRefreshFailedAt: Map<String, Long> = emptyMap()
 
+    /**
+     * refresh_token 被上游吊销（`invalid_grant`）的账号。
+     *
+     * 这种失败**重试无用**：再用同一 refresh_token 打只会持续撞墙，并可能加重风控。
+     * 必须让账号降到不可用并提示重新登录——与 CLIProxyAPI 对 invalid_grant 按 401 处理
+     * 同一语义（其 issue #4130：「cooldown Antigravity credentials on invalid_grant
+     * instead of silent retry loop」）。
+     */
+    @Volatile
+    private var revokedAccounts: Set<String> = emptySet()
+
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val credential = parse(account) ?: throw IllegalStateException("凭证无法解析，请重新登录")
+        if (account.uid in revokedAccounts) {
+            throw IllegalStateException("凭证已被上游吊销（refresh_token 无效），请重新登录")
+        }
         val nowSec = nowMillis() / 1000
         val hasExpiry = credential.expiresAt > 0
         val isExpired = hasExpiry && credential.expiresAt <= nowSec
@@ -343,6 +359,10 @@ class AntigravityProvider(
                 return updated
             }
             lastRefreshFailedAt = lastRefreshFailedAt + (uid to nowSec)
+            if (lastRefreshWasRevoked) {
+                revokedAccounts = revokedAccounts + uid
+                throw IllegalStateException("refresh_token 已被上游吊销（invalid_grant），请重新登录")
+            }
         }
         if (isExpired) {
             throw IllegalStateException("凭证已过期且刷新失败，稍后重试或重新登录")
@@ -365,6 +385,7 @@ class AntigravityProvider(
         synchronized(refreshLock) {
             if (lastRefreshed.containsKey(uid)) lastRefreshed = lastRefreshed - uid
             if (lastRefreshFailedAt.containsKey(uid)) lastRefreshFailedAt = lastRefreshFailedAt - uid
+            if (uid in revokedAccounts) revokedAccounts = revokedAccounts - uid
         }
     }
 
@@ -433,7 +454,12 @@ class AntigravityProvider(
         )
     }
 
+    /** 本次刷新的失败是否属于 refresh_token 被吊销（供调用方决定是否标记账号）。 */
+    @Volatile
+    private var lastRefreshWasRevoked = false
+
     private fun refreshAccessToken(credential: Credential): Credential? {
+        lastRefreshWasRevoked = false
         if (credential.refreshToken.isEmpty()) return null
         val form = mapOf(
             "client_id" to CLIENT_ID,
@@ -448,7 +474,14 @@ class AntigravityProvider(
             return null
         }
         if (status !in 200..299) {
-            hooks.onLog("Antigravity 刷新 Token 失败（HTTP $status）：${body.take(160)}")
+            // invalid_grant = refresh_token 已被上游吊销/失效：重试无用，需重新登录。
+            // 与 CLIProxyAPI issue #4130 的处理一致（按 401 语义降温，不静默重试）。
+            if (body.contains("invalid_grant")) {
+                lastRefreshWasRevoked = true
+                hooks.onLog("Antigravity refresh_token 已被吊销（invalid_grant），需要重新登录")
+            } else {
+                hooks.onLog("Antigravity 刷新 Token 失败（HTTP $status）：${body.take(160)}")
+            }
             return null
         }
         val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return null
@@ -503,10 +536,13 @@ class AntigravityProvider(
         return ""
     }
 
+    /** 当前生效的 User-Agent：版本随官方清单更新，不再写死。 */
+    private fun userAgent(): String = "antigravity/hub/${clientVersion()} darwin/arm64"
+
     private fun open(url: String, accessToken: String, body: String?): HttpURLConnection {
         val headers = buildMap {
             put("Authorization", "Bearer $accessToken")
-            put("User-Agent", USER_AGENT)
+            put("User-Agent", userAgent())
             if (body != null) put("Content-Type", "application/json")
         }
         return HttpSupport.open(
@@ -534,7 +570,7 @@ class AntigravityProvider(
             method = "POST",
             headers = mapOf(
                 "Authorization" to "Bearer $accessToken",
-                "User-Agent" to USER_AGENT,
+                "User-Agent" to userAgent(),
                 "Content-Type" to "application/json",
             ),
             body = body,
@@ -840,7 +876,11 @@ class AntigravityProvider(
         private const val MODEL_CACHE_TTL_MILLIS = 10L * 60 * 1000
         private const val DEFAULT_CONTEXT_LENGTH = 1_048_576L
 
-        const val USER_AGENT = "antigravity/hub/2.9.1 darwin/arm64"
+        /**
+         * 运行时 UA 的兜底版本（版本号本身动态化，见 [AntigravityVersion]）。
+         * 保留常量仅供测试与文档引用，业务代码请用 [AntigravityVersion.userAgent]。
+         */
+        const val USER_AGENT = "antigravity/hub/2.23.0 darwin/arm64"
 
         val SCOPES = listOf(
             "https://www.googleapis.com/auth/cloud-platform",

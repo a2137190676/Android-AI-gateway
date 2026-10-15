@@ -117,13 +117,39 @@ class AntigravityProviderTest {
 
     @Test
     fun `已过期且刷新失败时抛异常而不是拿旧 token 硬闯`() = withUpstream(
-        mapOf("/token" to (400 to """{"error":"invalid_grant"}""")),
+        mapOf("/token" to (500 to "boom")),
     ) { base, _ ->
         val provider = AntigravityProvider(nowMillis = { 2_000_000L }, tokenEndpoint = "$base/token")
         val stale = account(expiresAt = 1_000L)
         val error = runCatching { provider.refreshAccount(stale, 3600) }
         assertTrue(error.isFailure, "过期 + 刷新失败必须抛异常")
         assertTrue(error.exceptionOrNull()!!.message!!.contains("刷新失败"), error.exceptionOrNull()!!.message)
+    }
+
+    @Test
+    fun `invalid_grant 时明确提示重新登录并给账号降温`() = withUpstream(
+        mapOf("/token" to (400 to """{"error":"invalid_grant"}""")),
+    ) { base, _ ->
+        val provider = AntigravityProvider(nowMillis = { 2_000_000L }, tokenEndpoint = "$base/token")
+        val stale = account(expiresAt = 1_000L)
+
+        // refresh_token 被吊销后重试无用，必须报「重新登录」而不是含糊的刷新失败
+        val error = runCatching { provider.refreshAccount(stale, 3600) }
+        assertTrue(error.isFailure, "invalid_grant 必须抛异常")
+        assertTrue(
+            error.exceptionOrNull()!!.message!!.contains("重新登录"),
+            error.exceptionOrNull()!!.message,
+        )
+
+        // 已标记吊销：后续调用不再打 token 端点（避免用死 token 反复撞风控）
+        // 用一个未过期的凭证验证短路发生在网络请求之前
+        val fresh = account(expiresAt = 2_000_000_000L)
+        val again = runCatching { provider.refreshAccount(fresh, 3600) }
+        assertTrue(again.isFailure, "标记吊销后仍须报错")
+        assertTrue(
+            again.exceptionOrNull()!!.message!!.contains("重新登录"),
+            again.exceptionOrNull()!!.message,
+        )
     }
 
     @Test
