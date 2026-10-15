@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -130,7 +131,7 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                     ChoiceChip(LogTab.Calls.label, tab == LogTab.Calls) { tab = LogTab.Calls }
                     ChoiceChip(LogTab.Requests.label, tab == LogTab.Requests) { tab = LogTab.Requests }
                 }
-                // 两个标签下都保留设置入口，面板内容跟随当前标签（调用记录 / 请求日志 各自参数）
+                // 两个标签下都保留设置入口；面板内容与标签无关（见下方 LogSettings 分组）
                 Row(
                     modifier = Modifier
                         .clip(CircleShape)
@@ -154,11 +155,20 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                 }
             }
             if (showLogSettings) {
-                DiagnosticsSettings(state, viewModel)
-                if (tab == LogTab.Requests) {
-                    RequestLogSettings(state, viewModel)
-                } else {
+                // 面板与当前标签无关：两个标签看到完全相同的设置。
+                // 此前内容随标签切换（调用记录给归档/保留/清空，请求日志只给容量/清空），
+                // 导致「这个设置只有某个标签才有」的困惑——同类返工已发生两次。
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // 面板较长，限高 + 可滚动，避免挤掉下面的列表
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DiagnosticsSettings(state, viewModel)
                     CallLogSettings(state, viewModel)
+                    RequestLogSettings(state, viewModel)
                 }
             }
             if (tab == LogTab.Calls) {
@@ -391,6 +401,8 @@ private fun DiagnosticsSettings(state: AppUiState, viewModel: AppViewModel) {
 
 /**
  * 调用记录的参数设置：归档开关、保留天数、清空。
+ *
+ * 与请求日志、详细日志并列展示在同一面板内——面板内容不随标签变化。
  */
 @Composable
 private fun CallLogSettings(state: AppUiState, viewModel: AppViewModel) {
@@ -478,7 +490,8 @@ fun RetentionField(current: Int, onCommit: (Int) -> Unit) {
 
 /**
  * 请求日志的参数设置：每项参数一个控件，展开后直接调整，不折叠到弹窗里。
- * 只改「请求日志」相关项；调用记录的归档开关与保留天数在「调用记录」标签的设置面板里。
+ *
+ * 与调用记录、详细日志并列展示在同一面板内——面板内容不随标签变化。
  */
 @Composable
 private fun RequestLogSettings(state: AppUiState, viewModel: AppViewModel) {
