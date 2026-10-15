@@ -645,9 +645,16 @@ class GatewayHttpServer(
                     flushBatch(batch, writer)
                 }
             } catch (e: IOException) {
-                // 客户端中途断开是最常见原因，不算账号故障
+                // 客户端中途断开是最常见原因，不算账号故障。
+                // 但读上游超时/被上游重置也走这里：若不发终止帧，客户端只能一直等到
+                // 它自己的超时（表现为「没有响应」）。所以尽最大努力补一个错误帧 +
+                // [DONE]；若其实是客户端已断开，写入会失败并被忽略。
                 status = CallStatus.ABORTED
                 failure = e.message ?: "连接中断"
+                runCatching {
+                    writer.write("data: " + OpenAiApi.errorBody("upstream_interrupted", failure) + "\n\n")
+                    writer.write(SSE_DONE)
+                }
             } catch (e: Exception) {
                 // 网关自己处理流出错：不能混进「客户端断开」里，否则线上完全看不到根因
                 status = CallStatus.FAILED

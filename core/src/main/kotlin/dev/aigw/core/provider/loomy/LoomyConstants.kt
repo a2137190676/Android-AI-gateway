@@ -81,4 +81,13 @@ object LoomyConstants {
     /** session 认证头（非标准，官方客户端用裸 `token`）。
      *  注意：只有积分/模型类接口用它；对话接口要 `Authorization: Bearer`（已实测）。 */
     const val TOKEN_HEADER = "token"
+
+    /** 调用来源：`user` = 用户主动发起，`system` = 后台子调用。 */
+    const val INVOKE_ORIGIN_HEADER = "invokeorigin"
+
+    /** 会话 id（`chat-<uuid>`），官方客户端每个对话一个。 */
+    const val CHAT_ID_HEADER = "chatid"
+
+    /** 消息 id（`msg-<uuid>`），官方客户端每条消息一个。 */
+    const val MESSAGE_ID_HEADER = "msgid"
 }

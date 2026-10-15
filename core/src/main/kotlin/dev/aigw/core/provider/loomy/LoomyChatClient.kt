@@ -23,6 +23,11 @@ class LoomyChatClient(
             LoomyConstants.TOKEN_HEADER to account.session,
             LoomyConstants.TRACEPARENT_HEADER to LoomyTrace.newTraceparent(),
             LoomyConstants.VERSION_HEADER to clientVersion,
+            // 官方客户端会带这三个头（用客户端自带的调试反代导出真实请求得到）：
+            // `invokeorigin` 区分用户主动/后台子调用，`chatid`/`msgid` 用于服务端会话归因。
+            LoomyConstants.INVOKE_ORIGIN_HEADER to "user",
+            LoomyConstants.CHAT_ID_HEADER to "chat-${LoomyTrace.newUuid()}",
+            LoomyConstants.MESSAGE_ID_HEADER to "msg-${LoomyTrace.newUuid()}",
         )
         return openStreamCall("$apiBase${LoomyConstants.PATH_CHAT_COMPLETIONS}", headers, body)
     }
