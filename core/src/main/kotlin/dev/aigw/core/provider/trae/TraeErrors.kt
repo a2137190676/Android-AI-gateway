@@ -110,7 +110,7 @@ object TraeErrors {
             status == 429 -> TraeErrorKind.SOFT_RATE
             status in 500..599 -> TraeErrorKind.SERVER
             status in 400..499 -> when (code) {
-                1001L -> TraeErrorKind.SESSION_DEAD
+                1001L, 20101L -> TraeErrorKind.SESSION_DEAD
                 1005L, 4008L -> TraeErrorKind.PLAN_LIMIT
                 4011L -> TraeErrorKind.SOFT_RATE
                 else -> TraeErrorKind.CLIENT

@@ -316,6 +316,8 @@ class TraeErrorsTest {
         assertEquals(TraeErrorKind.PLAN_LIMIT, TraeErrors.fromStatus(400, """{"code":4008}"""))
         assertEquals(TraeErrorKind.SOFT_RATE, TraeErrors.fromStatus(400, """{"code":4011}"""))
         assertEquals(TraeErrorKind.SESSION_DEAD, TraeErrors.fromStatus(400, """{"code":1001}"""))
+        // 国际版失效码
+        assertEquals(TraeErrorKind.SESSION_DEAD, TraeErrors.fromStatus(400, """{"code":20101}"""))
         assertEquals(TraeErrorKind.CLIENT, TraeErrors.fromStatus(400, """{"code":4001}"""))
     }
 

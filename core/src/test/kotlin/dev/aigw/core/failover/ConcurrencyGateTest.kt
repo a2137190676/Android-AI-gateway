@@ -16,7 +16,8 @@ class ConcurrencyGateTest {
 
     @Test
     fun `disabled gate always admits and release is a no-op`() {
-        val gate = ConcurrencyGate { ConcurrencyConfig() }
+        // 显式禁用（两个上限都为 0）；默认值现在是单账号串行，不再是「禁用」
+        val gate = ConcurrencyGate { ConcurrencyConfig(maxPerAccount = 0, maxGlobal = 0) }
         val h1 = gate.tryAcquire("p/a")
         assertNotNull(h1)
         val h2 = gate.tryAcquire("p/a")
@@ -26,6 +27,12 @@ class ConcurrencyGateTest {
         h1.release()
         h2.release()
         assertEquals(0, gate.inFlightGlobal())
+    }
+
+    @Test
+    fun `默认配置按账号串行`() {
+        // 默认 maxPerAccount = 1：同一账号第二条在途请求要排队而不是一起发上游
+        assertEquals(1, ConcurrencyConfig().maxPerAccount)
     }
 
     @Test

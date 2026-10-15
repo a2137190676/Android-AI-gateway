@@ -107,7 +107,7 @@ class CodeBuddyProvider(
         val prepared = prepareCodeBuddyBody(openAiBody)
 
         val conn = try {
-            open("${chatBase(credential)}$PATH_CHAT", credential, prepared, chatHeaders(credential))
+            open("${chatBase(credential)}$PATH_CHAT", credential, prepared, chatHeaders(credential, prepared))
         } catch (e: Exception) {
             return FailedChatCall(0, e.message ?: "连接失败")
         }
@@ -852,7 +852,7 @@ class CodeBuddyProvider(
         )
     }
 
-    private fun chatHeaders(credential: Credential): Map<String, String> = buildMap {
+    private fun chatHeaders(credential: Credential, body: String? = null): Map<String, String> = buildMap {
         putAll(commonHeaders(credential))
         put("Authorization", "Bearer ${credential.accessToken}")
         if (credential.uid.isNotEmpty()) put("X-User-Id", credential.uid)
@@ -865,6 +865,38 @@ class CodeBuddyProvider(
         }
         if (credential.domain.isNotEmpty()) put("X-Domain", credential.domain)
         put("X-Product", "SaaS")
+        // 官方 CLI 的会话 ID 头族（对话端点必需）：国际版缺 `X-Conversation-ID`
+        // 会直接 400「conversation id missing」。
+        if (body != null) putAll(conversationHeaders(body))
+    }
+
+    /**
+     * 会话 ID 头族。
+     *
+     * 两个必须区分开的语义：
+     * - `X-Conversation-ID` **在同一个会话内必须稳定**：上游按它给提示词缓存分桶，
+     *   每请求一个新 id 会让每次请求落到不同桶——长上下文下实测 0% 前缀命中、
+     *   积分多花约 3 倍。所以它由消息前缀确定性派生（同会话同值）。
+     * - `X-Conversation-Request-ID` / `X-Conversation-Message-ID` / `X-Request-ID`
+     *   每个请求都换新（官方 CLI 也是如此，参照实现用抓包验证过）。
+     */
+    private fun conversationHeaders(body: String): Map<String, String> {
+        val traceId = uuid4()
+        // 派生不出会话指纹时**不能**改成随机：那会让每次请求落到不同缓存桶。
+        // 退回一个固定 UUID（与官方 CLI 的「会话内稳定」语义一致）。
+        val conversationId = stableConversationId(body).ifEmpty { FALLBACK_CONVERSATION_ID }
+        return mapOf(
+            "X-Conversation-ID" to conversationId,
+            "X-Conversation-Request-ID" to uuid4(),
+            "X-Conversation-Message-ID" to uuid4(),
+            "X-Request-ID" to traceId,
+            "X-Trace-ID" to traceId,
+            "X-Agent-Intent" to "craft",
+            "X-Agent-Purpose" to "conversation",
+            "X-IDE-Type" to "CLI",
+            "X-IDE-Name" to "CLI",
+            "x-codebuddy-request" to "1",
+        )
     }
 
     /**
@@ -1064,6 +1096,9 @@ class CodeBuddyProvider(
         const val REGION_CN = "cn"
         const val REGION_GLOBAL = "global"
 
+        /** 会话指纹算不出来时的固定会话 ID（保持「同会话同值」，不用随机）。 */
+        internal const val FALLBACK_CONVERSATION_ID = "00000000-0000-0000-0000-000000000000"
+
         /**
          * 一个区域对应的出站端点。
          *
@@ -1167,6 +1202,53 @@ class CodeBuddyProvider(
          *  用对话那套 300s 会被网关侧的 20s 聚合超时盖掉，看不到真实错误。 */
         private const val MODELS_READ_TIMEOUT_MS = 15_000
     }
+}
+
+/**
+ * 由请求体确定性派生「会话 ID」。
+ *
+ * 同一个会话的多轮请求必须得到同一个值（上游按它给提示词缓存分桶），
+ * 而不同会话必须不同。做法与参照实现一致：取会话的**稳定前缀**
+ * （system / developer 消息 + 首条 user 消息）做 SHA-256，再格式化成 UUID。
+ * 会话尾部（后续多轮）不参与，所以对话增长不会改变该 id。
+ *
+ * 没有可用消息时返回空串，让调用方退回固定值（而不是每请求随机）。
+ */
+internal fun stableConversationId(body: String): String {
+    val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return ""
+    val messages = obj.arrayOrNull("messages") ?: return ""
+    val seed = StringBuilder()
+    var firstUser: String? = null
+    for (element in messages) {
+        val message = runCatching { element.asJsonObject }.getOrNull() ?: continue
+        val role = message.get("role")?.asString.orEmpty()
+        if (role == "system" || role == "developer") {
+            seed.append(role).append(':').append(contentTextOf(message)).append('\n')
+        } else if (role == "user" && firstUser == null) {
+            firstUser = contentTextOf(message)
+        }
+    }
+    if (firstUser != null) seed.append("user:").append(firstUser).append('\n')
+    if (seed.isEmpty()) return ""
+    return uuidFromDigest(seed.toString())
+}
+
+/** 把消息 content（字符串或多模态数组）压成纯文本，用于生成会话指纹。 */
+private fun contentTextOf(message: JsonObject): String {
+    val content = message.get("content") ?: return ""
+    if (content.isJsonPrimitive && content.asJsonPrimitive.isString) return content.asString
+    val array = content as? com.google.gson.JsonArray ?: return ""
+    return array.mapNotNull { part ->
+        runCatching { part.asJsonObject.get("text")?.asString }.getOrNull()
+    }.joinToString("")
+}
+
+/** SHA-256 摘要 → 标准 UUID 字符串（版本位不做修正，只需稳定且唯一）。 */
+private fun uuidFromDigest(seed: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8))
+    val hex = digest.joinToString("") { "%02x".format(it) }
+    return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-" +
+        "${hex.substring(16, 20)}-${hex.substring(20, 32)}"
 }
 
 /**

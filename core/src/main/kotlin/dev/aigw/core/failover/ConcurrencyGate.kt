@@ -8,12 +8,18 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** 并发闸门参数。 */
 data class ConcurrencyConfig(
-    /** 同一账号同时在途的请求数上限；0 = 不限。 */
-    val maxPerAccount: Int = 0,
+    /**
+     * 同一账号同时在途的请求数上限；0 = 不限。
+     *
+     * 默认 1（串行）：上游按账号维度限流并发流，同一账号被 N 条流同时打时，
+     * 除第一条外的连接会被挂住、只回一个空的首 chunk 就不再出内容，客户端遂超时。
+     * 官方客户端本身对同一账号就是一次一个请求，所以按账号串行才是忠实的行为。
+     */
+    val maxPerAccount: Int = 1,
     /** 全网关同时在途的请求数上限；0 = 不限。 */
     val maxGlobal: Int = 0,
     /** 所有许可被占满时，排队等待的超时毫秒数；超时按并发拒绝处理。 */
-    val queueTimeoutMs: Long = 10_000L,
+    val queueTimeoutMs: Long = 120_000L,
 ) {
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("maxPerAccount", maxPerAccount)
@@ -36,9 +42,9 @@ data class ConcurrencyConfig(
         fun fromJson(obj: JsonObject?): ConcurrencyConfig {
             if (obj == null) return ConcurrencyConfig()
             return ConcurrencyConfig(
-                maxPerAccount = clampMaxPerAccount(obj.get("maxPerAccount")?.asInt ?: 0),
+                maxPerAccount = clampMaxPerAccount(obj.get("maxPerAccount")?.asInt ?: 1),
                 maxGlobal = clampMaxGlobal(obj.get("maxGlobal")?.asInt ?: 0),
-                queueTimeoutMs = clampQueueTimeoutMs(obj.get("queueTimeoutMs")?.asLong ?: 10_000L),
+                queueTimeoutMs = clampQueueTimeoutMs(obj.get("queueTimeoutMs")?.asLong ?: 120_000L),
             )
         }
     }

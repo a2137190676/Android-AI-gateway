@@ -91,7 +91,7 @@ class LoomyProvider(
         val streaming = isStreamingBody(openAiBody)
 
         val call = try {
-            chatClient.openStream(loomy, openAiBody)
+            chatClient.openStream(loomy, if (streaming) withIncludeUsage(openAiBody) else openAiBody)
         } catch (e: LoomyApiException) {
             return FailedChatCall(e.status, e.body)
         }
