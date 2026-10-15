@@ -199,6 +199,9 @@ class GatewayEngine(
     private val circuitBreakers = ConcurrentHashMap<String, dev.aigw.core.failover.ProviderCircuitBreaker>()
     private val providerMetrics = ConcurrentHashMap<String, dev.aigw.core.failover.ProviderMetricsTracker>()
 
+    /** 模型级冷却表：该 (供应商, 模型) 暂时不可用时直接跳过，换号无意义。仅内存。 */
+    private val modelCooldown = dev.aigw.core.failover.ModelCooldownTracker(nowMillis)
+
     /** 上游请求并发闸门：配置随 failoverSettings 动态生效。 */
     val concurrencyGate = dev.aigw.core.failover.ConcurrencyGate { failoverSettings.concurrency }
 
@@ -362,7 +365,7 @@ class GatewayEngine(
         log(
             "故障转移配置已更新（启用=${updated.enabled}，单供应商最大重试=${updated.retry.maxAttempts}，" +
                 "熔断阈值=${updated.circuitBreaker.failureThreshold}，并发：单账号=${updated.concurrency.maxPerAccount}，" +
-                "全局=${updated.concurrency.maxGlobal}，0 表示不限）",
+                "全局=${updated.concurrency.maxGlobal}，0 表示不限；模型级冷却=${updated.modelCooldown.cooldownMs}ms）",
         )
     }
 
@@ -373,6 +376,8 @@ class GatewayEngine(
 
     fun metricsOf(providerId: String): dev.aigw.core.failover.ProviderMetricsTracker =
         providerMetrics.computeIfAbsent(providerId) { dev.aigw.core.failover.ProviderMetricsTracker() }
+
+    fun modelCooldownOf(): dev.aigw.core.failover.ModelCooldownTracker = modelCooldown
 
     // ------------------------------------------------------------------ 模型开放名单
 

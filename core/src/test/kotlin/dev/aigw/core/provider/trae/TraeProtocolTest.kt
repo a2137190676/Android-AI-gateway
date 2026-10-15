@@ -210,7 +210,7 @@ class TraeSseParserTest {
         val failure = events[0] as SoloEvent.Failure
         assertEquals(1005L, failure.code)
         assertEquals("plan", failure.message)
-        assertEquals(TraeErrorKind.PLAN_LIMIT, SoloStreamError(failure.code, failure.message).kind)
+        assertEquals(TraeErrorKind.MODEL_LIMIT, SoloStreamError(failure.code, failure.message).kind)
     }
 
     @Test
@@ -262,7 +262,7 @@ class OpenAiSseTranslatorTest {
 
     @Test
     fun `流内错误输出 OpenAI 标准错误帧`() {
-        // 额度耗尽（code 1005）曾被转成私有格式（event: error + 字符串 body），
+        // 额度/权益不足（code 1005）曾被转成私有格式（event: error + 字符串 body），
         // 网关的 parseChunk 识别不了，客户端看到的是「正常结束」——错误被静默吞掉
         val translator = OpenAiSseTranslator("id1", "m")
         val chunks = translator.translate(SoloEvent.Failure(1005, "额度已耗尽"))
@@ -273,7 +273,7 @@ class OpenAiSseTranslatorTest {
         val error = obj.getAsJsonObject("error")
         assertEquals(1005L, error.get("code").asLong)
         assertEquals("额度已耗尽", error.get("message").asString)
-        assertEquals("QUOTA", error.get("type").asString, "PLAN_LIMIT 映射到统一错误分类 QUOTA")
+        assertEquals("MODEL_LIMIT", error.get("type").asString, "1005 映射到统一错误分类 MODEL_LIMIT")
         assertEquals("data: [DONE]\n\n", chunks[1])
     }
 
@@ -345,7 +345,7 @@ class OpenAiAggregatorTest {
         val aggregator = OpenAiAggregator("id1", "m")
         aggregator.accept(SoloEvent.Failure(1005, "plan"))
         assertNotNull(aggregator.failure)
-        assertEquals(TraeErrorKind.PLAN_LIMIT, aggregator.failure!!.kind)
+        assertEquals(TraeErrorKind.MODEL_LIMIT, aggregator.failure!!.kind)
     }
 }
 
@@ -357,7 +357,7 @@ class TraeErrorsTest {
         assertEquals(TraeErrorKind.NOT_FOUND, TraeErrors.fromStatus(404, ""))
         assertEquals(TraeErrorKind.SOFT_RATE, TraeErrors.fromStatus(429, ""))
         assertEquals(TraeErrorKind.SERVER, TraeErrors.fromStatus(503, ""))
-        assertEquals(TraeErrorKind.PLAN_LIMIT, TraeErrors.fromStatus(400, """{"code":1005}"""))
+        assertEquals(TraeErrorKind.MODEL_LIMIT, TraeErrors.fromStatus(400, """{"code":1005}"""))
         assertEquals(TraeErrorKind.PLAN_LIMIT, TraeErrors.fromStatus(400, """{"code":4008}"""))
         assertEquals(TraeErrorKind.SOFT_RATE, TraeErrors.fromStatus(400, """{"code":4011}"""))
         assertEquals(TraeErrorKind.SESSION_DEAD, TraeErrors.fromStatus(400, """{"code":1001}"""))

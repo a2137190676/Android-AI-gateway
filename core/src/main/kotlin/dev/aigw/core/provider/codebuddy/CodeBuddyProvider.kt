@@ -158,9 +158,12 @@ class CodeBuddyProvider(
             // 死账号被反复选中、用户持续收到「请求被上游拒绝」。其余五家都这么映射。
             status == 401 || status == 403 -> ErrorKind.SESSION_DEAD
             status == 402 -> ErrorKind.QUOTA
-            status == 429 -> ErrorKind.SOFT_RATE
+            // 429 分两种：业务码 6004 是**该模型**超限（换号无用，换模型立刻可用），
+            // 其余 429（无业务码/账号级限流）才按可退避的限流处理。
+            status == 429 -> if (businessCode(body) == CODE_MODEL_LIMITED) ErrorKind.MODEL_LIMIT else ErrorKind.SOFT_RATE
             status == 404 -> ErrorKind.NOT_FOUND
             status in 500..599 -> ErrorKind.SERVER
+            businessCode(body) == CODE_MODEL_LIMITED -> ErrorKind.MODEL_LIMIT
             matchesQuota(body) -> ErrorKind.QUOTA
             matchesSessionDead(body) -> ErrorKind.SESSION_DEAD
             status in 400..499 -> ErrorKind.CLIENT
@@ -168,6 +171,10 @@ class CodeBuddyProvider(
         }
         return UpstreamError(kind, message.ifEmpty { "上游 HTTP $status" })
     }
+
+    /** 取响应体里的业务码；取不到/非数字返回 null。 */
+    private fun businessCode(body: String): Long? =
+        runCatching { JsonParser.parseString(body).asJsonObject.get("code")?.asLong }.getOrNull()
 
     override fun creditInfo(account: ProviderAccount): CreditInfo? {
         val credential = parse(account) ?: return null
@@ -1150,6 +1157,9 @@ class CodeBuddyProvider(
 
         const val REGION_CN = "cn"
         const val REGION_GLOBAL = "global"
+
+        /** 业务码：该模型已超限（换号无用，换模型立刻可用）。 */
+        const val CODE_MODEL_LIMITED = 6004L
 
         /** 刷新失败后的冷却秒数：期间不再重打上游刷新端点。 */
         const val REFRESH_COOLDOWN_SECONDS = 60L

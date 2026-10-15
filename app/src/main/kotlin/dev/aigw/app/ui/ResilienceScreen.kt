@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.aigw.core.failover.CircuitBreakerConfig
 import dev.aigw.core.failover.ConcurrencyConfig
+import dev.aigw.core.failover.ModelCooldownConfig
 import dev.aigw.core.failover.RetryConfig
 
 /**
@@ -63,6 +64,11 @@ fun ResilienceScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
             config = failover.circuitBreaker,
             onOpenEdit = { editTarget = ResilienceEditTarget.CircuitBreaker },
         )
+        Spacer(Modifier.height(4.dp))
+        ModelCooldownComponent(
+            config = failover.modelCooldown,
+            onOpenEdit = { editTarget = ResilienceEditTarget.ModelCooldown },
+        )
 
         Spacer(Modifier.height(8.dp))
         Text(
@@ -99,11 +105,19 @@ fun ResilienceScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
                     editTarget = null
                 },
             )
+            ResilienceEditTarget.ModelCooldown -> ModelCooldownEditDialog(
+                current = state.failover.modelCooldown,
+                onDismiss = { editTarget = null },
+                onConfirm = { next ->
+                    viewModel.updateFailoverSettings(state.failover.copy(modelCooldown = next))
+                    editTarget = null
+                },
+            )
         }
     }
 }
 
-private enum class ResilienceEditTarget { Concurrency, Retry, CircuitBreaker }
+private enum class ResilienceEditTarget { Concurrency, Retry, CircuitBreaker, ModelCooldown }
 
 @Composable
 private fun ConcurrencyComponent(config: ConcurrencyConfig, onOpenEdit: () -> Unit) {
@@ -171,6 +185,18 @@ private fun CircuitBreakerComponent(config: CircuitBreakerConfig, onOpenEdit: ()
         ParamRow("半开恢复成功数", "${config.halfOpenSuccessCount} 次")
         Spacer(Modifier.height(4.dp))
         OutlineActionButton("修改熔断参数") { onOpenEdit() }
+    }
+}
+
+@Composable
+private fun ModelCooldownComponent(config: ModelCooldownConfig, onOpenEdit: () -> Unit) {
+    SectionLabel("模型级冷却")
+    SectionCard(enterIndex = 3) {
+        ParamRow("冷却时长", "${config.cooldownMs / 1000} 秒")
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        ParamRow("冷却上限", "${config.maxCooldownMs / 1000} 秒")
+        Spacer(Modifier.height(4.dp))
+        OutlineActionButton("修改模型级冷却") { onOpenEdit() }
     }
 }
 
@@ -314,6 +340,43 @@ private fun CircuitBreakerEditDialog(
                         failureThreshold = (threshold.toIntOrNull() ?: current.failureThreshold).coerceIn(1, 100),
                         openDurationMs = ((openSeconds.toLongOrNull() ?: (current.openDurationMs / 1000)).coerceIn(1L, 3600L)) * 1000,
                         halfOpenSuccessCount = (halfOpen.toIntOrNull() ?: current.halfOpenSuccessCount).coerceIn(1, 10),
+                    ),
+                )
+            }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun ModelCooldownEditDialog(
+    current: ModelCooldownConfig,
+    onDismiss: () -> Unit,
+    onConfirm: (ModelCooldownConfig) -> Unit,
+) {
+    var cooldownSeconds by remember { mutableStateOf((current.cooldownMs / 1000).toString()) }
+    var maxSeconds by remember { mutableStateOf((current.maxCooldownMs / 1000).toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("修改模型级冷却") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                NumberField("冷却时长（秒）", cooldownSeconds, 5) { cooldownSeconds = it }
+                NumberField("冷却上限（秒）", maxSeconds, 5) { maxSeconds = it }
+                Text(
+                    text = "上游报「该模型已超限」类错误时，只冷却该模型：不换账号、不计熔断，冷却期内该模型直接跳过。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onConfirm(
+                    ModelCooldownConfig(
+                        cooldownMs = (cooldownSeconds.toLongOrNull() ?: (current.cooldownMs / 1000)).coerceIn(1L, 7200L) * 1000,
+                        maxCooldownMs = (maxSeconds.toLongOrNull() ?: (current.maxCooldownMs / 1000)).coerceIn(1L, 7200L) * 1000,
                     ),
                 )
             }) { Text("保存") }

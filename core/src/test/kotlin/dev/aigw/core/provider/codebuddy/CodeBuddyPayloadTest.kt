@@ -76,6 +76,22 @@ class CodeBuddyPayloadTest {
     }
 
     @Test
+    fun `429 带业务码 6004 判为模型级限额`() {
+        // 6004 是「该模型」超限：换账号无用（其它模型立刻可用），且不该计供应商熔断
+        assertEquals(
+            ErrorKind.MODEL_LIMIT,
+            provider.classify(429, """{"code":6004,"message":"当前模型已达使用上限"}""").kind,
+        )
+        // 6004 也可能随非 429 状态码回来
+        assertEquals(
+            ErrorKind.MODEL_LIMIT,
+            provider.classify(400, """{"code":6004}""").kind,
+        )
+        // 其它业务码 / 无业务码的 429 仍是可退避限流
+        assertEquals(ErrorKind.SOFT_RATE, provider.classify(429, """{"code":1234}""").kind)
+    }
+
+    @Test
     fun `非法 JSON 原样返回不抛异常`() {
         assertEquals("not-json", prepareCodeBuddyBody("not-json"))
     }

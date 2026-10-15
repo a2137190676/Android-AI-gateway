@@ -8,7 +8,10 @@ import dev.aigw.core.util.str
 
 /** 上游返回的业务错误分类，决定重试策略、换号/切换供应商与硬禁用。 */
 enum class TraeErrorKind {
-    /** 1005 / 4008：权益或额度不足，等待重置或签到。 */
+    /** 1005：套餐权益拒绝，**模型级**——换号无用、换模型立刻可用。 */
+    MODEL_LIMIT,
+
+    /** 4008：账号级额度不足，等重置或签到。 */
     PLAN_LIMIT,
 
     /** 4011 / 429：触发限流，可退避重试。 */
@@ -32,7 +35,8 @@ class SoloStreamError(val code: Long, val message: String) {
     val kind: TraeErrorKind
         get() = when (code) {
             1001L -> TraeErrorKind.SESSION_DEAD
-            1005L, 4008L -> TraeErrorKind.PLAN_LIMIT
+            1005L -> TraeErrorKind.MODEL_LIMIT
+            4008L -> TraeErrorKind.PLAN_LIMIT
             4011L -> TraeErrorKind.SOFT_RATE
             else -> TraeErrorKind.CLIENT
         }
@@ -72,12 +76,14 @@ class TraeHttpException(
             if (isHumanReadable(upstream)) return upstream
             return when (code) {
                 1001L -> "凭证已失效，需要重新登录"
-                1005L, 4008L -> "额度已耗尽，等每日重置或签到"
+                1005L -> "该模型当前不可用（套餐权益拒绝），换其它模型或等重置"
+                4008L -> "额度已耗尽，等每日重置或签到"
                 4011L -> "请求过于频繁，已被上游限流"
                 9074L -> "签到被拒：设备指纹未通过校验"
                 4001L -> "模型或客户端版本不被上游接受"
                 else -> when (kind) {
                     TraeErrorKind.SESSION_DEAD -> "凭证已失效，需要重新登录"
+                    TraeErrorKind.MODEL_LIMIT -> "该模型当前不可用（套餐权益拒绝），换其它模型或等重置"
                     TraeErrorKind.PLAN_LIMIT -> "额度已耗尽，等每日重置或签到"
                     TraeErrorKind.SOFT_RATE -> "请求过于频繁，已被上游限流"
                     TraeErrorKind.NOT_FOUND -> "上游接口不存在"
@@ -111,7 +117,8 @@ object TraeErrors {
             status in 500..599 -> TraeErrorKind.SERVER
             status in 400..499 -> when (code) {
                 1001L, 20101L -> TraeErrorKind.SESSION_DEAD
-                1005L, 4008L -> TraeErrorKind.PLAN_LIMIT
+                1005L -> TraeErrorKind.MODEL_LIMIT
+                4008L -> TraeErrorKind.PLAN_LIMIT
                 4011L -> TraeErrorKind.SOFT_RATE
                 else -> TraeErrorKind.CLIENT
             }

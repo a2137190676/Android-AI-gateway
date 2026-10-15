@@ -249,6 +249,22 @@ class GatewayHttpServer(
 
             val pMetrics = engine.metricsOf(providerId)
             val resolvedModel = provider.resolveModel(currentRoute.model)
+
+            // 1b. 模型级冷却：该 (供应商, 模型) 刚被判为「模型不可用」（如 6004/1005），
+            // 换号必然再撞同一道墙，直接转下一候选供应商。
+            if (engine.modelCooldownOf().isCooling(providerId, resolvedModel)) {
+                val skipReason = "$providerId/$resolvedModel(模型级冷却中，直接跳过)"
+                log("模型 [$resolvedModel] 在 [$providerId] 处于模型级冷却中，跳过此候选...")
+                routeErrors.add(skipReason)
+                val next = candidateRoutes()
+                    .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                if (next != null) {
+                    currentRoute = next
+                    continue
+                }
+                break
+            }
+
             val prepared = withModel(body, resolvedModel)
             val secSettings = engine.securitySettings()
             // 反审核脱敏：仅改写 system 消息内的敏感词（注入零宽空格），完全不触碰 user 输入
@@ -377,6 +393,17 @@ class GatewayHttpServer(
                         gateHandle.release()
                         break
                     }
+                    // 模型级不可用：只冷却该模型，不换号、不计熔断（换号撞同一道墙，
+                    // 且它不代表供应商故障）。直接跳出账号循环转下一候选供应商。
+                    if (failure.kind == ErrorKind.MODEL_LIMIT) {
+                        val cooldownMs = failoverCfg.modelCooldown.cooldownMs
+                        engine.modelCooldownOf().markCooling(currentRoute.providerId, resolvedModel, cooldownMs)
+                        log("模型级不可用，冷却 $cooldownMs ms（${currentRoute.providerId}/$resolvedModel）：${failure.message}")
+                        providerLastError = failure.message
+                        lastHttpStatus = call.status
+                        gateHandle.release()
+                        break
+                    }
                     // 到这里才是上游侧错误：计入熔断与健康指标
                     cb.recordFailure()
                     pMetrics.record(false, elapsed, failure.kind.name)
@@ -440,6 +467,18 @@ class GatewayHttpServer(
                         break
                     }
 
+                    // 模型级不可用（如 CodeBuddy 429/6004、Trae 1005）：只冷却该模型，
+                    // 不换号、不计熔断，直接转下一候选供应商。
+                    if (error.kind == ErrorKind.MODEL_LIMIT) {
+                        val cooldownMs = failoverCfg.modelCooldown.cooldownMs
+                        engine.modelCooldownOf().markCooling(currentRoute.providerId, resolvedModel, cooldownMs)
+                        log("模型级不可用，冷却 $cooldownMs ms（${currentRoute.providerId}/$resolvedModel）：${error.message}")
+                        providerLastError = error.message
+                        lastHttpStatus = call.status
+                        gateHandle.release()
+                        break
+                    }
+
                     // 剩余为上游侧可重试错误（5xx/429/网络/额度/404）：计入熔断与健康指标
                     cb.recordFailure()
                     pMetrics.record(false, elapsed, "http_${call.status}")
@@ -465,6 +504,7 @@ class GatewayHttpServer(
 
                 // 成功链路：记录熔断器成功与度量指标，模型统一归一化为客户端请求的名称
                 cb.recordSuccess()
+                engine.modelCooldownOf().clear(currentRoute.providerId, resolvedModel)
                 pMetrics.record(true, System.currentTimeMillis() - attemptStart)
                 val transparentModel = requestedModel
 

@@ -480,6 +480,7 @@ internal fun traeErrorMessage(e: TraeHttpException): String = when (e.upstreamCo
 }
 
 internal fun TraeErrorKind.toErrorKind(): ErrorKind = when (this) {
+    TraeErrorKind.MODEL_LIMIT -> ErrorKind.MODEL_LIMIT
     TraeErrorKind.PLAN_LIMIT -> ErrorKind.QUOTA
     TraeErrorKind.SOFT_RATE -> ErrorKind.SOFT_RATE
     TraeErrorKind.NOT_FOUND -> ErrorKind.NOT_FOUND

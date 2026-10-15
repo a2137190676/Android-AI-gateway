@@ -103,6 +103,34 @@ data class CircuitBreakerConfig(
     }
 }
 
+/**
+ * 模型级冷却参数。
+ *
+ * 上游对「该模型已超限」类错误只给一句重置文案，格式未验证，所以先给固定时长；
+ * 冷却期内该模型直接跳过，不再换号、不计熔断。
+ */
+data class ModelCooldownConfig(
+    /** 一次模型级限流后的冷却毫秒数（默认 10 分钟）。 */
+    val cooldownMs: Long = 600_000L,
+    /** 冷却时长上限（默认 2 小时），避免误判出超长冷却。 */
+    val maxCooldownMs: Long = 7_200_000L,
+) {
+    fun toJson(): JsonObject = JsonObject().apply {
+        addProperty("cooldownMs", cooldownMs)
+        addProperty("maxCooldownMs", maxCooldownMs)
+    }
+
+    companion object {
+        fun fromJson(obj: JsonObject?): ModelCooldownConfig {
+            if (obj == null) return ModelCooldownConfig()
+            return ModelCooldownConfig(
+                cooldownMs = obj.get("cooldownMs")?.asLong?.coerceIn(1_000L, 7_200_000L) ?: 600_000L,
+                maxCooldownMs = obj.get("maxCooldownMs")?.asLong?.coerceIn(1_000L, 7_200_000L) ?: 7_200_000L,
+            )
+        }
+    }
+}
+
 /** 模型故障转移总配置 */
 data class ModelFailoverSettings(
     val enabled: Boolean = true,
@@ -110,6 +138,8 @@ data class ModelFailoverSettings(
     val circuitBreaker: CircuitBreakerConfig = CircuitBreakerConfig(),
     /** 上游请求并发闸门：全局与单账号在途上限。 */
     val concurrency: ConcurrencyConfig = ConcurrencyConfig(),
+    /** 模型级冷却（针对该模型不可用类错误）。 */
+    val modelCooldown: ModelCooldownConfig = ModelCooldownConfig(),
     // 逻辑模型名 -> 候选供应商列表
     val routes: Map<String, List<FailoverCandidate>> = emptyMap(),
 ) {
@@ -118,6 +148,7 @@ data class ModelFailoverSettings(
         add("retry", retry.toJson())
         add("circuitBreaker", circuitBreaker.toJson())
         add("concurrency", concurrency.toJson())
+        add("modelCooldown", modelCooldown.toJson())
         val routesObj = JsonObject()
         for ((model, candidates) in routes) {
             val arr = JsonArray()
@@ -148,6 +179,7 @@ data class ModelFailoverSettings(
                 retry = RetryConfig.fromJson(obj.getAsJsonObject("retry")),
                 circuitBreaker = CircuitBreakerConfig.fromJson(obj.getAsJsonObject("circuitBreaker")),
                 concurrency = ConcurrencyConfig.fromJson(obj.getAsJsonObject("concurrency")),
+                modelCooldown = ModelCooldownConfig.fromJson(obj.getAsJsonObject("modelCooldown")),
                 routes = routes,
             )
         }
