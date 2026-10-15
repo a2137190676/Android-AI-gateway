@@ -105,7 +105,10 @@ class CodeBuddyProvider(
         val credential = parse(account) ?: return FailedChatCall(401, "凭证无法解析")
         val streaming = isStreaming(openAiBody)
         val model = resolveModel(requestedModel(openAiBody))
-        val prepared = prepareCodeBuddyBody(openAiBody)
+        val request = prepareCodeBuddyRequest(openAiBody)
+        val prepared = request.body
+        // 工具名被改写过时，响应里的调用名要还原（空表 = 直接透传）
+        val restoreNames = request.toolNameRestore
 
         val conn = try {
             open("${chatBase(credential)}$PATH_CHAT", credential, prepared, chatHeaders(credential, prepared))
@@ -128,14 +131,15 @@ class CodeBuddyProvider(
         val stream = conn.inputStream
         if (contentType.contains("event-stream", ignoreCase = true)) {
             if (streaming) {
-                return StreamingChatCall(status, stream) { conn.disconnect() }
+                val body = if (restoreNames.isEmpty()) stream else ToolNameRestoringStream(stream, restoreNames)
+                return StreamingChatCall(status, body) { conn.disconnect() }
             }
             val aggregated = try {
                 OpenAiSseAggregator.aggregate(stream, model)
             } finally {
                 conn.disconnect()
             }
-            return AggregatedChatCall(status, aggregated)
+            return AggregatedChatCall(status, restoreToolNames(aggregated, restoreNames))
         }
 
         val text = runCatching { stream.use { HttpSupport.readLimited(it) } }.getOrDefault("")
@@ -147,7 +151,7 @@ class CodeBuddyProvider(
         if (businessCode != null && businessCode != 0L) {
             return StreamFailureChatCall(200, classify(200, text))
         }
-        return AggregatedChatCall(status, text)
+        return AggregatedChatCall(status, restoreToolNames(text, restoreNames))
     }
 
     override fun classify(status: Int, body: String): UpstreamError {
@@ -1327,14 +1331,49 @@ private fun uuidFromDigest(seed: String): String {
  *    与 `max_completion_tokens` → `max_tokens`；
  * 4. 去掉上游会拦的特征文本（Claude Code / Codex CLI 的系统提示词片段）。
  */
-internal fun prepareCodeBuddyBody(src: String): String {
-    val obj = runCatching { JsonParser.parseString(src).asJsonObject }.getOrNull() ?: return src
+internal fun prepareCodeBuddyBody(src: String): String = prepareCodeBuddyRequest(src).body
+
+/** 归一化后的请求体 + 工具名还原表（空表 = 无需还原，响应可原样透传）。 */
+internal data class PreparedCodeBuddyRequest(
+    val body: String,
+    val toolNameRestore: Map<String, String>,
+)
+
+internal fun prepareCodeBuddyRequest(src: String): PreparedCodeBuddyRequest {
+    val obj = runCatching { JsonParser.parseString(src).asJsonObject }.getOrNull()
+        ?: return PreparedCodeBuddyRequest(src, emptyMap())
     obj.addProperty("stream", true)
     normalizeCodeBuddyToolChoice(obj)
     normalizeCodeBuddyMessages(obj)
     normalizeCodeBuddyMaxTokens(obj)
     unflagCodeBuddyMessages(obj)
-    return obj.toString()
+    val restore = normalizeCodeBuddyTools(obj)
+    return PreparedCodeBuddyRequest(obj.toString(), restore)
+}
+
+/**
+ * 工具形状归一：schema 按上游能接受的形状改写，工具名里的非法字符换成 `_`。
+ *
+ * 不做这两件事时，国际版会直接回 400「Invalid request parameters」（11133）。
+ * 返回「改写后的名字 → 原名」，供响应侧还原调用名。
+ */
+private fun normalizeCodeBuddyTools(obj: JsonObject): Map<String, String> {
+    val tools = obj.arrayOrNull("tools") ?: return emptyMap()
+    val restore = LinkedHashMap<String, String>()
+    for (element in tools) {
+        val tool = runCatching { element.asJsonObject }.getOrNull() ?: continue
+        val function = tool.objOrNull("function") ?: continue
+        function.get("name")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.let { name ->
+            val original = name.asString
+            val sanitized = sanitizeToolName(original)
+            if (sanitized != original) {
+                function.addProperty("name", sanitized)
+                restore.putIfAbsent(sanitized, original)
+            }
+        }
+        function.get("parameters")?.let { function.add("parameters", normalizeToolParameters(it)) }
+    }
+    return restore
 }
 
 /** 上游不认 `max_completion_tokens`（新版 OpenAI 客户端会发它），只认 `max_tokens`。 */
