@@ -1,5 +1,6 @@
 package dev.aigw.core.provider.codebuddy
 
+import dev.aigw.core.protocol.stableConversationId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals

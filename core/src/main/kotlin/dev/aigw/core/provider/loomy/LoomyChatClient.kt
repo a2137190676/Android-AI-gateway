@@ -1,5 +1,8 @@
 package dev.aigw.core.provider.loomy
 
+import dev.aigw.core.protocol.FALLBACK_CONVERSATION_ID
+import dev.aigw.core.protocol.stableConversationId
+
 /**
  * 对话客户端。
  *
@@ -26,7 +29,11 @@ class LoomyChatClient(
             // 官方客户端会带这三个头（用客户端自带的调试反代导出真实请求得到）：
             // `invokeorigin` 区分用户主动/后台子调用，`chatid`/`msgid` 用于服务端会话归因。
             LoomyConstants.INVOKE_ORIGIN_HEADER to "user",
-            LoomyConstants.CHAT_ID_HEADER to "chat-${LoomyTrace.newUuid()}",
+            // `chatid` 官方客户端**每个对话一个**，且上游很可能按它给提示词缓存分桶：
+            // 每请求换新 id 等于每请求换一个缓存桶，长上下文下前缀永不命中
+            // （CodeBuddy 踩过同型坑，见 ConversationFingerprint 的说明）。
+            LoomyConstants.CHAT_ID_HEADER to "chat-" + stableConversationId(body).ifEmpty { FALLBACK_CONVERSATION_ID },
+            // `msgid` 是消息级标识，官方客户端每条消息一个 → 每请求换新是对的。
             LoomyConstants.MESSAGE_ID_HEADER to "msg-${LoomyTrace.newUuid()}",
         )
         return openStreamCall("$apiBase${LoomyConstants.PATH_CHAT_COMPLETIONS}", headers, body)

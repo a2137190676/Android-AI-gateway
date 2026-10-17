@@ -28,6 +28,8 @@ import dev.aigw.core.provider.StreamFailureChatCall
 import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
 import dev.aigw.core.util.arrayOrNull
+import dev.aigw.core.protocol.FALLBACK_CONVERSATION_ID
+import dev.aigw.core.protocol.stableConversationId
 import dev.aigw.core.util.HttpSupport
 import dev.aigw.core.util.firstLong
 import dev.aigw.core.util.firstString
@@ -1176,9 +1178,6 @@ class CodeBuddyProvider(
         /** 刷新失败后的冷却秒数：期间不再重打上游刷新端点。 */
         const val REFRESH_COOLDOWN_SECONDS = 60L
 
-        /** 会话指纹算不出来时的固定会话 ID（保持「同会话同值」，不用随机）。 */
-        internal const val FALLBACK_CONVERSATION_ID = "00000000-0000-0000-0000-000000000000"
-
         /**
          * 一个区域对应的出站端点。
          *
@@ -1282,53 +1281,6 @@ class CodeBuddyProvider(
          *  用对话那套 300s 会被网关侧的 20s 聚合超时盖掉，看不到真实错误。 */
         private const val MODELS_READ_TIMEOUT_MS = 15_000
     }
-}
-
-/**
- * 由请求体确定性派生「会话 ID」。
- *
- * 同一个会话的多轮请求必须得到同一个值（上游按它给提示词缓存分桶），
- * 而不同会话必须不同。做法与参照实现一致：取会话的**稳定前缀**
- * （system / developer 消息 + 首条 user 消息）做 SHA-256，再格式化成 UUID。
- * 会话尾部（后续多轮）不参与，所以对话增长不会改变该 id。
- *
- * 没有可用消息时返回空串，让调用方退回固定值（而不是每请求随机）。
- */
-internal fun stableConversationId(body: String): String {
-    val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return ""
-    val messages = obj.arrayOrNull("messages") ?: return ""
-    val seed = StringBuilder()
-    var firstUser: String? = null
-    for (element in messages) {
-        val message = runCatching { element.asJsonObject }.getOrNull() ?: continue
-        val role = message.get("role")?.asString.orEmpty()
-        if (role == "system" || role == "developer") {
-            seed.append(role).append(':').append(contentTextOf(message)).append('\n')
-        } else if (role == "user" && firstUser == null) {
-            firstUser = contentTextOf(message)
-        }
-    }
-    if (firstUser != null) seed.append("user:").append(firstUser).append('\n')
-    if (seed.isEmpty()) return ""
-    return uuidFromDigest(seed.toString())
-}
-
-/** 把消息 content（字符串或多模态数组）压成纯文本，用于生成会话指纹。 */
-private fun contentTextOf(message: JsonObject): String {
-    val content = message.get("content") ?: return ""
-    if (content.isJsonPrimitive && content.asJsonPrimitive.isString) return content.asString
-    val array = content as? com.google.gson.JsonArray ?: return ""
-    return array.mapNotNull { part ->
-        runCatching { part.asJsonObject.get("text")?.asString }.getOrNull()
-    }.joinToString("")
-}
-
-/** SHA-256 摘要 → 标准 UUID 字符串（版本位不做修正，只需稳定且唯一）。 */
-private fun uuidFromDigest(seed: String): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8))
-    val hex = digest.joinToString("") { "%02x".format(it) }
-    return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-" +
-        "${hex.substring(16, 20)}-${hex.substring(20, 32)}"
 }
 
 /**
