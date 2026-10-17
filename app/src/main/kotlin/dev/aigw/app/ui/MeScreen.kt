@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
@@ -213,7 +214,14 @@ private fun EditorialRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                // 标题固定单行：「中文 · ENGLISH」被挤成两行会破坏栅格（英文标签跑到第二行）
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -439,15 +447,20 @@ private fun TokenUsageRow(
     }
 }
 
-/** 缓存命中率后缀：无缓存数据（cachedTokens == 0 或输入为 0）时返回「—」，不显示误导性的百分比。 */
-private fun cacheHitSuffix(cachedTokens: Long, percent: Double?): String =
-    if (cachedTokens > 0 && percent != null) String.format(Locale.US, "（%.0f%%）", percent) else "—"
+/** 缓存命中率后缀：没有缓存数据时返回 null（不显示百分比，也不显示占位符号）。 */
+private fun cacheHitSuffix(cachedTokens: Long, percent: Double?): String? =
+    if (cachedTokens > 0 && percent != null) String.format(Locale.US, "（%.0f%%）", percent) else null
 
-/** 「并发与容错」入口的摘要文案。 */
+/**
+ * 「并发与容错」入口的右侧元信息。
+ *
+ * 写成紧凑形式（不带空格）：这一行的标题是全页最长（「并发与容错 · RESILIENCE」），
+ * 元信息再用「并发 单账号 1 / 全局 0」这种长文案会把英文标签挤到第二行。
+ */
 private fun concurrencySummary(failover: dev.aigw.core.failover.ModelFailoverSettings): String {
     val concurrency = failover.concurrency
     return when {
         concurrency.maxPerAccount == 0 && concurrency.maxGlobal == 0 -> "并发不限"
-        else -> "并发 单账号 ${concurrency.maxPerAccount} / 全局 ${concurrency.maxGlobal}"
+        else -> "单账号${concurrency.maxPerAccount}/全局${concurrency.maxGlobal}"
     }
 }
