@@ -22,18 +22,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.google.gson.JsonObject
 import dev.aigw.app.ui.ChoiceChip
 import dev.aigw.app.ui.OutlineActionButton
+import dev.aigw.app.ui.PointsBillRow
+import dev.aigw.app.ui.PointsBillsHint
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
 import dev.aigw.app.ui.providers.ProviderUi
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus
 import dev.aigw.core.provider.ACTION_CHECKIN
-import dev.aigw.core.provider.PointsBill
 
 object RaccoonUi : ProviderUi {
 
@@ -141,63 +141,10 @@ object RaccoonUi : ProviderUi {
         }
 
         when {
-            view == null -> BillsHint("正在加载积分明细…")
-            view.error.isNotEmpty() -> BillsHint("加载失败：${view.error}", error = true)
-            view.bills.isEmpty() -> BillsHint("暂无积分明细")
-            else -> for (bill in view.bills) BillRow(bill)
-        }
-    }
-
-    @Composable
-    private fun BillsHint(text: String, error: Boolean = false) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-
-    @Composable
-    private fun BillRow(bill: PointsBill) {
-        val time = remember(bill.createdAtMillis) {
-            if (bill.createdAtMillis > 0) {
-                java.text.DateFormat.getDateTimeInstance(
-                    java.text.DateFormat.SHORT,
-                    java.text.DateFormat.SHORT,
-                ).format(java.util.Date(bill.createdAtMillis))
-            } else {
-                ""
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = bill.title,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (time.isNotEmpty()) {
-                    Text(
-                        text = time,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Text(
-                text = if (bill.points > 0) "+${bill.points}" else bill.points.toString(),
-                style = MaterialTheme.typography.bodySmall,
-                color = when {
-                    bill.points > 0 -> MaterialTheme.colorScheme.tertiary
-                    bill.points < 0 -> MaterialTheme.colorScheme.error
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+            view == null -> PointsBillsHint("正在加载积分明细…")
+            view.error.isNotEmpty() -> PointsBillsHint("加载失败：${view.error}", error = true)
+            view.bills.isEmpty() -> PointsBillsHint("暂无积分明细")
+            else -> for (bill in view.bills) PointsBillRow(bill)
         }
     }
 }

@@ -84,10 +84,15 @@ class AntigravityProvider(
                 fetchedAtMillis = nowMillis()
                 return ProviderModelCatalogView(models = fetched, fromFallback = false, error = "")
             }
-            // 若云端拉取失败但之前有成功缓存，继续回退使用之前的缓存，避免列表突然变空
+            // 若云端拉取失败但之前有成功缓存，继续回退使用之前的缓存，避免列表突然变空；
+            // 但这已不是本次拉取的结果，必须如实置位，界面据此标注「缓存」
             val previous = fetchedModels
             if (!previous.isNullOrEmpty()) {
-                return ProviderModelCatalogView(models = previous, fromFallback = false, error = "")
+                return ProviderModelCatalogView(
+                    models = previous,
+                    fromFallback = true,
+                    error = lastErr.ifEmpty { "上游未返回模型，展示上次成功的结果" },
+                )
             }
             return ProviderModelCatalogView(models = emptyList(), fromFallback = false, error = lastErr)
         }
@@ -137,7 +142,8 @@ class AntigravityProvider(
                     if (modelId.isEmpty() || EXCLUDED_MODELS.contains(modelId)) continue
                     val meta = value as? JsonObject
                     val displayName = meta?.stringOrNull("displayName").orEmpty().ifEmpty { modelId }
-                    val contextLength = meta?.longOrNull("maxTokens")?.takeIf { it > 0 } ?: DEFAULT_CONTEXT_LENGTH
+                    // 上游未给 maxTokens 时不填（0 = 界面不展示），不要拿一个常量冒充上下文窗口
+                    val contextLength = meta?.longOrNull("maxTokens")?.takeIf { it > 0 } ?: 0L
                     result.add(ProviderModel(modelId, displayName, contextLength))
                 }
                 if (result.isNotEmpty()) {
@@ -874,7 +880,6 @@ class AntigravityProvider(
         )
 
         private const val MODEL_CACHE_TTL_MILLIS = 10L * 60 * 1000
-        private const val DEFAULT_CONTEXT_LENGTH = 1_048_576L
 
         /**
          * 运行时 UA 的兜底版本（版本号本身动态化，见 [AntigravityVersion]）。

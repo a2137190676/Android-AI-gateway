@@ -631,11 +631,16 @@ class GatewayEngine(
         val account = pool.account(providerId, uid)
             ?: return CreditRefreshResult(providerId, uid, "", 0, false, "账号不存在")
         val info: CreditInfo = try {
+            // 额度刷新本身不保鲜：动作/对话成功后都会紧接着刷一次额度，这里再保鲜会让同一次动作多打一轮刷新端点，
+            // 而「刷新额度」按钮所在的页面随后会走 creditPacks/pointsBills（它们会保鲜）。
             provider.creditInfo(account)
                 ?: return CreditRefreshResult(providerId, uid, account.nickname, 0, false, "该供应商不支持额度刷新")
         } catch (e: Exception) {
+            // 与「provider 自己报 known=false」保持一致：刷新失败不能把旧值继续当最新值展示
             logWarn("额度刷新异常（$providerId/${account.nickname.ifEmpty { uid }}）：${e.message}")
-            return CreditRefreshResult(providerId, uid, account.nickname, 0, false, e.message ?: "刷新额度失败")
+            val reason = e.message ?: "刷新额度失败"
+            pool.updateCredits(providerId, uid, 0, false, reason)
+            return CreditRefreshResult(providerId, uid, account.nickname, 0, false, reason)
         }
         pool.updateCredits(providerId, uid, info.balance, info.known, info.detail)
         if (info.known) {
@@ -670,7 +675,7 @@ class GatewayEngine(
         val provider = registry.get(providerId) ?: return emptyList()
         val account = pool.account(providerId, uid) ?: return emptyList()
         return try {
-            provider.creditPacks(account)
+            provider.creditPacks(freshAccount(provider, account))
         } catch (e: Exception) {
             logWarn("拉取额度包失败（$providerId/$uid）：${e.message}")
             emptyList()
@@ -686,7 +691,7 @@ class GatewayEngine(
         val provider = registry.get(providerId) ?: return null
         val account = pool.account(providerId, uid) ?: return null
         return try {
-            provider.taskList(account)
+            provider.taskList(freshAccount(provider, account))
         } catch (e: Exception) {
             logWarn("拉取任务列表失败（$providerId/$uid）：${e.message}")
             ProviderTaskListView(emptyList(), error = e.message ?: "拉取任务列表失败")
@@ -702,7 +707,7 @@ class GatewayEngine(
         val provider = registry.get(providerId) ?: return null
         val account = pool.account(providerId, uid) ?: return null
         return try {
-            provider.pointsBills(account)
+            provider.pointsBills(freshAccount(provider, account))
         } catch (e: Exception) {
             logWarn("拉取积分明细失败（$providerId/$uid）：${e.message}")
             PointsBillListView(emptyList(), error = e.message ?: "拉取积分明细失败")
@@ -1212,6 +1217,7 @@ class GatewayEngine(
 
         val models = ArrayList<RoutedModel>()
         var firstError: String? = null
+        var anyFallback = false
         for (region in started) {
             val view = views[region]
             if (view == null) {
@@ -1223,6 +1229,7 @@ class GatewayEngine(
                 "global" -> "国外"
                 else -> region
             }
+            if (view.fromFallback) anyFallback = true
             for (model in view.models) {
                 if (settings.onlyUsableModels && provider.isInternalModel(model.id)) continue
                 models.add(
@@ -1232,14 +1239,15 @@ class GatewayEngine(
                         model,
                         routePrefix = "${provider.id}-$region",
                         region = region,
+                        cached = view.fromFallback,
                     ),
                 )
             }
             if (view.error.isNotEmpty()) firstError = firstError ?: view.error
         }
-        // 供应商自报错误只在拿不到任何模型时才算失败；没有内置快照兜底后，
+        // 供应商自报错误只在拿不到任何模型、或这轮是回退的旧清单时才算失败；没有内置快照兜底后，
         // 无账号/拉取失败是否报红由各家 listModels 的 error 决定
-        return ProviderModelsChunk(provider.id, models, if (models.isEmpty()) firstError else null)
+        return ProviderModelsChunk(provider.id, models, if (models.isEmpty() || anyFallback) firstError else null)
     }
 
     /** 无区域概念的供应商：用池里挑出的那一个账号拉一份目录。 */
@@ -1247,8 +1255,12 @@ class GatewayEngine(
         val view = fetchCatalog(provider, pool.pick(provider.id))
         val models = view.models
             .filterNot { settings.onlyUsableModels && provider.isInternalModel(it.id) }
-            .map { RoutedModel(provider.id, provider.displayName, it) }
-        return ProviderModelsChunk(provider.id, models, if (models.isEmpty()) view.error.ifEmpty { null } else null)
+            .map { RoutedModel(provider.id, provider.displayName, it, cached = view.fromFallback) }
+        return ProviderModelsChunk(
+            provider.id,
+            models,
+            if (models.isEmpty() || view.fromFallback) view.error.ifEmpty { null } else null,
+        )
     }
 
     /** 用给定账号拉一份模型目录；凭证临期或已过期时先做一次安全的 refreshAccount 保鲜。 */

@@ -46,9 +46,11 @@ class LoomyModelCatalog(
      * 登录前本就不该有模型，报错只会在模型页吓人。
      */
     fun models(session: String?): List<LoomyModel> {
+        // 标记描述的是「本次返回的清单怎么来的」，每次调用先重置，
+        // 否则上一次的失败会被后面命中 TTL 缓存的调用沿用。
+        fromFallback = false
+        lastError = ""
         if (session.isNullOrEmpty()) {
-            fromFallback = false
-            lastError = ""
             return emptyList()
         }
         val now = nowMillis()

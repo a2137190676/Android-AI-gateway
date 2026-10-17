@@ -10,12 +10,13 @@ import dev.aigw.core.util.str
 data class TraeModel(
     val id: String,
     val name: String,
-    val contextWindow: Long = 131_072,
+    /** 上游 `max_input_tokens`；上游未给时为 0（界面据此不展示上下文），不编造默认值。 */
+    val contextWindow: Long = 0,
 )
 
 /**
  * `get_detail_param` 的请求体构造与响应解析。
- * 响应结构：`{"config_info_list":[{"config_name","display_config":{"display_name"}}]}`
+ * 响应结构：`{"config_info_list":[{"config_name","max_input_tokens","display_config":{"display_name"}}]}`
  */
 internal object TraePayloadModels {
 
@@ -38,7 +39,10 @@ internal object TraePayloadModels {
             val id = cfg.str("config_name")
             if (id.isEmpty()) continue
             val display = cfg.objOrNull("display_config")?.str("display_name").orEmpty()
-            out.add(TraeModel(id = id, name = display.ifEmpty { id }))
+            val context = cfg.long("max_input_tokens").takeIf { it > 0 }
+                ?: cfg.long("maxInputTokens").takeIf { it > 0 }
+                ?: 0L
+            out.add(TraeModel(id = id, name = display.ifEmpty { id }, contextWindow = context))
         }
         return out
     }

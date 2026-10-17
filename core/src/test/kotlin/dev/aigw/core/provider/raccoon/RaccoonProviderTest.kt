@@ -27,6 +27,7 @@ class RaccoonProviderTest {
     private companion object {
         const val GRANT_PATH = "/api/web/desktop/v1/login/points/grant"
         const val BILLS_PATH = "/api/web/points/v1/bills"
+        const val BALANCE_PATH = "/api/web/points/v1/balance"
     }
 
     private fun account() = ProviderAccount(
@@ -329,6 +330,29 @@ class RaccoonProviderTest {
             assertTrue(view.bills[0].createdAtMillis > 0, "created_at 应被解析成毫秒")
             assertEquals(-300L, view.bills[1].points, "支出必须保留负号")
             assertEquals("daily_expire", view.bills[1].title, "event_name 缺失时回退 biz_type")
+        }
+    }
+
+    // ------------------------------------------------------------------ 积分余额
+
+    @Test
+    fun `余额为 0 是真实值而不是缺字段`() {
+        val body = """{"code":0,"data":{"available_points":0}}"""
+        withUpstream(path = BALANCE_PATH, body = body) { base ->
+            val info = assertNotNull(RaccoonProvider(host = base).creditInfo(account()))
+            assertTrue(info.known, "上游明确给了 0，就是真实余额")
+            assertEquals(0L, info.balance)
+        }
+    }
+
+    @Test
+    fun `余额字段缺失时不能报成 known 的 0`() {
+        // 上游改口径（字段没了）时，界面必须显示「—」而不是「积分 0」
+        val body = """{"code":0,"data":{"daily_points":300,"monthly_points":1200}}"""
+        withUpstream(path = BALANCE_PATH, body = body) { base ->
+            val info = assertNotNull(RaccoonProvider(host = base).creditInfo(account()))
+            assertFalse(info.known, "没有积分字段就不能当已知额度：${info.detail}")
+            assertEquals(0L, info.balance)
         }
     }
 

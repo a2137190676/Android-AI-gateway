@@ -32,6 +32,7 @@ import dev.aigw.core.util.HttpSupport
 import dev.aigw.core.util.firstLong
 import dev.aigw.core.util.firstString
 import dev.aigw.core.util.jwtClaim
+import dev.aigw.core.util.longOrNull
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.str
 import java.net.HttpURLConnection
@@ -198,18 +199,25 @@ class CodeBuddyProvider(
             }
             val data = envelopeData(text) ?: return CreditInfo(0, known = false, detail = "响应缺少 data")
             val accounts = data.objOrNull("Response")?.objOrNull("Data")?.arrayOrNull("Accounts")
+                ?: return CreditInfo(0, known = false, detail = "响应缺少 Response.Data.Accounts")
             var remain = 0L
-            accounts?.forEach { element ->
+            var fieldSeen = false
+            accounts.forEach { element ->
                 val item = runCatching { element.asJsonObject }.getOrNull() ?: return@forEach
-                val size = item.get("CycleCapacitySize")?.asLong ?: 0L
-                val cycleRemain = item.get("CycleCapacityRemain")?.asLong ?: 0L
-                val value = if (size > 0 || cycleRemain > 0) {
-                    cycleRemain
+                // 字段缺失（结构改口径）不能当成「额度就是 0」：三个键全缺时视为解析不了，报 known=false
+                val size = item.longOrNull("CycleCapacitySize")
+                val cycleRemain = item.longOrNull("CycleCapacityRemain")
+                val capacityRemain = item.longOrNull("CapacityRemain")
+                if (size == null && cycleRemain == null && capacityRemain == null) return@forEach
+                fieldSeen = true
+                val value = if ((size ?: 0L) > 0 || (cycleRemain ?: 0L) > 0) {
+                    cycleRemain ?: 0L
                 } else {
-                    item.get("CapacityRemain")?.asLong ?: 0L
+                    capacityRemain ?: 0L
                 }
                 if (value > 0) remain += value
             }
+            if (!fieldSeen) return CreditInfo(0, known = false, detail = "响应里没有可识别的额度字段")
             CreditInfo(remain, known = true, detail = "周期剩余 $remain")
         } catch (e: Exception) {
             CreditInfo(0, known = false, detail = e.message ?: "查询额度失败")

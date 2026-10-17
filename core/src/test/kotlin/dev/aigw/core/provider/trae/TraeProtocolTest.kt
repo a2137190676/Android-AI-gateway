@@ -514,6 +514,21 @@ class TraeModelCatalogTest {
     }
 
     @Test
+    fun `上下文窗口取上游 max_input_tokens 缺失时不编造`() {
+        // 131072 曾是本地写死的固定值，而上游明明给了 max_input_tokens，必须读上游；
+        // 上游没给时只能记 0（界面据此不展示），不能拿一个常量冒充。
+        val raw = """
+            {"config_info_list":[
+              {"config_name":"glm-5.2","max_input_tokens":200000,"display_config":{"display_name":"GLM 5.2"}},
+              {"config_name":"kimi-k3","display_config":{"display_name":"Kimi K3"}}
+            ]}
+        """.trimIndent()
+        val models = TraePayloadModels.parse(raw)
+        assertEquals(200_000L, models[0].contextWindow, "应取上游 max_input_tokens")
+        assertEquals(0L, models[1].contextWindow, "上游没给上下文窗口时必须为 0，不能编造")
+    }
+
+    @Test
     fun `没有账号时不列模型`() {
         // 模型目录只在登录后向官方接口拉取：无账号时既不给内置快照，也不算失败
         // （否则用户会把内置快照当成可用模型，一发请求就缺凭证）。

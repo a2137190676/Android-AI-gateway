@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.aigw.core.provider.ProviderCapability
 
 /**
  * 额度中心：列出有账号的供应商，点进去看该供应商各账号的额度包明细。
@@ -67,7 +68,12 @@ fun CreditCenterScreen(state: AppUiState, onOpen: (String) -> Unit, onBack: () -
     }
 }
 
-/** 某个供应商各账号的额度包明细。 */
+/**
+ * 某个供应商各账号的额度明细：额度包 + （有账本的供应商）逐笔积分流水。
+ *
+ * 小浣熊这类供应商没有额度包概念，额度就是积分余额，逐笔明细全在流水里；
+ * 只列额度包会让它在额度中心里看起来「没有明细」。
+ */
 @Composable
 fun ProviderCreditsScreen(
     providerId: String,
@@ -77,10 +83,14 @@ fun ProviderCreditsScreen(
 ) {
     val accounts = state.accountsOf(providerId)
     val displayName = state.providerOf(providerId)?.displayName ?: providerId
+    val hasLedger = state.providerOf(providerId)?.capabilities?.contains(ProviderCapability.POINTS_BILLS) == true
 
     // 进页面拉一次；账号变化时重拉
     LaunchedEffect(providerId, accounts.map { it.uid }) {
-        accounts.forEach { viewModel.loadCreditPacks(providerId, it.uid) }
+        accounts.forEach {
+            viewModel.loadCreditPacks(providerId, it.uid)
+            if (hasLedger) viewModel.loadPointsBills(providerId, it.uid)
+        }
     }
 
     PageScaffold(
@@ -97,6 +107,7 @@ fun ProviderCreditsScreen(
 
         for (account in accounts) {
             val packs = state.creditPacks["$providerId/${account.uid}"].orEmpty()
+            val bills = state.pointsBills["$providerId/${account.uid}"]
             SectionCard(enterIndex = 2) {
                 SectionLabel(account.nickname.ifEmpty { account.uid })
                 Text(
@@ -106,11 +117,11 @@ fun ProviderCreditsScreen(
                 )
                 if (packs.isEmpty()) {
                     Text(
-                        text = if (!account.creditsKnown && account.detail.isNotEmpty()) {
-                            // 额度包为空多半伴随刷新失败，把池里记下的失败原因亮出来
-                            account.detail
-                        } else {
-                            "没有额度包明细"
+                        text = when {
+                            // 账本型供应商（如小浣熊）没有额度包，额度就是积分余额，明细在下方流水里
+                            hasLedger -> "该供应商没有额度包，积分流水见下"
+                            !account.creditsKnown && account.detail.isNotEmpty() -> account.detail
+                            else -> "没有额度包明细"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -139,9 +150,19 @@ fun ProviderCreditsScreen(
                         }
                     }
                 }
+                if (hasLedger) {
+                    SectionLabel("积分明细")
+                    when {
+                        bills == null -> PointsBillsHint("正在加载积分明细…")
+                        bills.error.isNotEmpty() -> PointsBillsHint("加载失败：${bills.error}", error = true)
+                        bills.bills.isEmpty() -> PointsBillsHint("暂无积分明细")
+                        else -> for (bill in bills.bills) PointsBillRow(bill)
+                    }
+                }
                 OutlineActionButton("刷新") {
                     viewModel.refreshCredits(providerId, account.uid)
                     viewModel.loadCreditPacks(providerId, account.uid)
+                    if (hasLedger) viewModel.loadPointsBills(providerId, account.uid)
                 }
             }
         }

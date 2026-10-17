@@ -15,6 +15,10 @@ data class RoutedModel(
     val routePrefix: String = providerId,
     /** 区域标识（如 cn/global）；null 表示该供应商无区域概念。 */
     val region: String? = null,
+    /**
+     * 本次目录是上游拉取失败后回退的旧清单（不是本次真实拉取结果），界面据此标注「缓存」。
+     */
+    val cached: Boolean = false,
 ) {
     val fullId: String get() = "$routePrefix/${model.id}"
 }

@@ -274,10 +274,12 @@ class TraeProvider(
         val trae = parseOrNull(account) ?: return null
         return try {
             val usage = checkinClient(regionOfAccount(account)).entUsage(trae)
-            if (usage.parsed) {
+            // 命中权益包列表还不够：包内字段缺失时 limit/remain 都是 0，报 known=true 就成了「额度真是 0」
+            if (usage.parsed && usage.limit > 0) {
                 CreditInfo(usage.remain, known = true, detail = "权益包剩余 ${usage.remain} / ${usage.limit}")
             } else {
-                CreditInfo(0, known = false, detail = "上游未返回可解析的额度")
+                val reason = if (usage.parsed) "上游返回的权益包没有可解析的额度" else "上游未返回可解析的额度"
+                CreditInfo(0, known = false, detail = reason)
             }
         } catch (e: TraeHttpException) {
             CreditInfo(0, known = false, detail = e.message ?: "刷新额度失败")

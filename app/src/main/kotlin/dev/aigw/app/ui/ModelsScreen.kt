@@ -198,6 +198,8 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
                 for ((routePrefix, models) in grouped) {
                     val title = models.firstOrNull()?.providerName ?: routePrefix
                     val allExposed = models.isNotEmpty() && models.all { exposure.allows(it.fullId) }
+                    // 这一组本轮没拉到上游、用的是上次成功的清单：明确标注，不能让旧清单冒充实时结果
+                    val cachedGroup = models.isNotEmpty() && models.all { it.cached }
                     item(key = "header-$routePrefix") {
                         Row(
                             modifier = Modifier
@@ -222,6 +224,20 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
                                 modifier = Modifier.size(18.dp),
                             )
                             SectionLabel(title)
+                            if (cachedGroup) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f))
+                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                ) {
+                                    Text(
+                                        text = "缓存",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                    )
+                                }
+                            }
                             Box(Modifier.weight(1f))
                             if (exposure.filterEnabled) {
                                 Text(

@@ -30,6 +30,9 @@ enum class ProviderCapability {
 
     /** 有可批量执行的「任务」（如 Loomy 的新手任务）。 */
     TASKS,
+
+    /** 有积分/额度流水账本，可查逐笔明细（如小浣熊的积分流水）。 */
+    POINTS_BILLS,
 }
 
 /** 供应商专属动作（provider 实现 [Provider.performAction]，UI 组件按名字调用）。 */

@@ -69,7 +69,7 @@ class RaccoonProvider(
     override val displayName: String = "小浣熊"
     override val authKind: AuthKind = AuthKind.WEBVIEW_CALLBACK
     override val capabilities: Set<ProviderCapability> =
-        setOf(ProviderCapability.CREDIT_REFRESH, ProviderCapability.CHECKIN)
+        setOf(ProviderCapability.CREDIT_REFRESH, ProviderCapability.CHECKIN, ProviderCapability.POINTS_BILLS)
 
     // ------------------------------------------------------------------ 模型
 
@@ -259,7 +259,10 @@ class RaccoonProvider(
             val (status, text) = getJson("$host$PATH_BALANCE", jsonHeaders(credential))
             if (status !in 200..299) return CreditInfo(0, known = false, detail = "上游 HTTP $status")
             val data = envelopeData(text) ?: return CreditInfo(0, known = false, detail = "响应缺少 data")
-            val points = data.firstLong("available_points", "availablePoints", "points", "balance", "credits")
+            // 不能走 firstLong：它把 0 当「未提供」，而积分真的是 0 与字段缺失必须区分——
+            // 字段缺失要报 known=false（界面显示「—」），不能显示成「积分 0」。
+            val points = BALANCE_POINT_KEYS.firstNotNullOfOrNull { data.longOrNull(it) }
+                ?: return CreditInfo(0, known = false, detail = "响应里没有积分字段（键：${data.keySet().joinToString(",")}）")
             CreditInfo(points, known = true, detail = "可用积分 $points")
         } catch (e: Exception) {
             CreditInfo(0, known = false, detail = e.message ?: "查询积分失败")
@@ -642,6 +645,10 @@ class RaccoonProvider(
         const val PATH_CHAT_V1 = "/api/web/llm/v1/chat/completions"
         const val PATH_MODELS = "/api/web/llm/v2/model_catalog"
         const val PATH_BALANCE = "/api/web/points/v1/balance"
+
+        /** 余额响应里可能放可用积分的键（按优先级）。字段缺失与「真是 0」必须区分。 */
+        private val BALANCE_POINT_KEYS =
+            listOf("available_points", "availablePoints", "points", "balance", "credits")
 
         /** 桌面端登录奖励（不是每日签到）。 */
         const val PATH_GRANT = "/api/web/desktop/v1/login/points/grant"

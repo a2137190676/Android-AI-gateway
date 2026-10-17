@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.ui.theme.LocalAppColors
@@ -548,4 +549,63 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
             )
         }
     }
+}
+
+/**
+ * 一笔积分/额度流水：左侧事件名与时间，右侧带符号的变动值。
+ *
+ * 供应商无关：小浣熊的积分明细与「额度中心」的流水共用这一处渲染。
+ */
+@Composable
+fun PointsBillRow(bill: dev.aigw.core.provider.PointsBill, modifier: Modifier = Modifier) {
+    val time = remember(bill.createdAtMillis) {
+        if (bill.createdAtMillis > 0) {
+            java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.SHORT,
+                java.text.DateFormat.SHORT,
+            ).format(java.util.Date(bill.createdAtMillis))
+        } else {
+            ""
+        }
+    }
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = bill.title,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (time.isNotEmpty()) {
+                Text(
+                    text = time,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = if (bill.points > 0) "+${bill.points}" else bill.points.toString(),
+            style = MaterialTheme.typography.bodySmall,
+            color = when {
+                bill.points > 0 -> MaterialTheme.colorScheme.tertiary
+                bill.points < 0 -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+/** 流水区块的提示行（加载中 / 失败 / 空）；[error] 为 true 时用错误色。 */
+@Composable
+fun PointsBillsHint(text: String, error: Boolean = false) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
