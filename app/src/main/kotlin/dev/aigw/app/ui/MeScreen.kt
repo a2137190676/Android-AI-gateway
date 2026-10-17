@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.core.usage.StorageAudit
+import java.util.Locale
 
 @Composable
 fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit) {
@@ -323,6 +324,8 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     // 存储占用不挂在全局 refresh 里（要扫全量存储键并解密，代价高），
     // 本页「存储」卡片读的是 state 里的同一份，不主动刷新会恒为 0，故进入本页时算一次。
     LaunchedEffect(Unit) { viewModel.refreshStorage() }
+    val todayCacheHit = cacheHitSuffix(state.today.cachedTokens, state.today.cacheHitPercent)
+    val totalCacheHit = cacheHitSuffix(state.total.cachedTokens, state.total.cacheHitPercent)
     PageScaffold(
         title = "用量统计",
         subtitle = "累计与今日",
@@ -344,6 +347,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             TokenUsageRow("输入 Tokens", state.today.promptTokens, MaterialTheme.colorScheme.primary)
+            TokenUsageRow("缓存命中 Tokens", state.today.cachedTokens, MaterialTheme.colorScheme.primary, suffix = todayCacheHit)
             TokenUsageRow("输出 Tokens", state.today.completionTokens, MaterialTheme.colorScheme.tertiary)
             TokenUsageRow("总计 Tokens", state.today.totalTokens, MaterialTheme.colorScheme.secondary)
         }
@@ -357,6 +361,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             TokenUsageRow("输入 Tokens", state.total.promptTokens, MaterialTheme.colorScheme.primary)
+            TokenUsageRow("缓存命中 Tokens", state.total.cachedTokens, MaterialTheme.colorScheme.primary, suffix = totalCacheHit)
             TokenUsageRow("输出 Tokens", state.total.completionTokens, MaterialTheme.colorScheme.tertiary)
             TokenUsageRow("总计 Tokens", state.total.totalTokens, MaterialTheme.colorScheme.secondary)
         }
@@ -379,6 +384,7 @@ private fun TokenUsageRow(
     label: String,
     tokens: Long,
     indicatorColor: androidx.compose.ui.graphics.Color,
+    suffix: String? = null,
 ) {
     Row(
         modifier = Modifier
@@ -421,9 +427,21 @@ private fun TokenUsageRow(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+            if (suffix != null) {
+                Text(
+                    text = suffix,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
         }
     }
 }
+
+/** 缓存命中率后缀：无缓存数据（cachedTokens == 0 或输入为 0）时返回「—」，不显示误导性的百分比。 */
+private fun cacheHitSuffix(cachedTokens: Long, percent: Double?): String =
+    if (cachedTokens > 0 && percent != null) String.format(Locale.US, "（%.0f%%）", percent) else "—"
 
 /** 「并发与容错」入口的摘要文案。 */
 private fun concurrencySummary(failover: dev.aigw.core.failover.ModelFailoverSettings): String {

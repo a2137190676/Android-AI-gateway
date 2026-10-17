@@ -290,6 +290,10 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
                 append(if (record.streaming) "流式" else "非流式")
                 append(" · ${record.durationMillis}ms")
                 if (record.totalTokens > 0) append(" · ${record.totalTokens} tokens")
+                if (record.cachedTokens > 0 && record.promptTokens > 0) {
+                    val hitPercent = String.format(Locale.US, "%.0f", record.cachedTokens * 100.0 / record.promptTokens)
+                    append(" · 命中 ${formatTokens(record.cachedTokens)}/输入 ${formatTokens(record.promptTokens)} ($hitPercent%)")
+                }
                 if (record.pointsConsumed > 0) append(" · 消耗 ${record.pointsConsumed} 积分")
                 if (record.accountNickname.isNotEmpty()) append(" · ${record.accountNickname}")
             },

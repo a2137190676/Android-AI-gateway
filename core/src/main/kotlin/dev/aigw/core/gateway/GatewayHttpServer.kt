@@ -12,6 +12,7 @@ import dev.aigw.core.usage.CallStatus
 import dev.aigw.core.util.CappedStringBuilder
 import dev.aigw.core.util.arrayOrNull
 import dev.aigw.core.util.asObjectOrNull
+import dev.aigw.core.util.longOrNull
 import dev.aigw.core.util.newCompletionId
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.stringOrNull
@@ -991,6 +992,23 @@ class GatewayHttpServer(
     )
 
     /**
+     * 从 usage 里取「命中前缀缓存的输入 token」。
+     *
+     * 三家口径都认（先 OpenAI，再 DeepSeek/腾讯系的平铺字段，最后 Anthropic 风格）：
+     * - OpenAI：`prompt_tokens_details.cached_tokens`（Gemini 路径由 [OpenAiGemini] 映射过来）
+     * - DeepSeek / Hunyuan：`prompt_cache_hit_tokens`
+     * - Anthropic：`cache_read_input_tokens`
+     * 上游没报就是 0（不估算）。
+     */
+    internal fun cachedTokensOf(usage: JsonObject?): Long {
+        val obj = usage ?: return 0L
+        for (key in listOf("prompt_cache_hit_tokens", "cache_read_input_tokens")) {
+            obj.get(key)?.takeIf { it.isJsonPrimitive }?.asLong?.let { if (it > 0) return it }
+        }
+        return obj.objOrNull("prompt_tokens_details")?.longOrNull("cached_tokens")?.coerceAtLeast(0L) ?: 0L
+    }
+
+    /**
      * 从流 chunk 里取「本次积分消耗」；字段清单照官方 Web 客户端的 turnPoints 解析
      * （顶层与 usage 里的 points_consumed / cost_points / consumed_points / points / total_points，
      * 先字段后来源，取第一个可解析的）。其余供应商无此字段，返回 0。
@@ -1071,6 +1089,7 @@ class GatewayHttpServer(
                 promptTokens = usage?.get("prompt_tokens")?.asLong ?: 0L,
                 completionTokens = usage?.get("completion_tokens")?.asLong ?: 0L,
                 totalTokens = usage?.get("total_tokens")?.asLong ?: 0L,
+                cachedTokens = cachedTokensOf(usage),
                 pointsConsumed = pointsConsumed,
                 durationMillis = System.currentTimeMillis() - startedAt,
                 error = error,

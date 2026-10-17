@@ -31,6 +31,11 @@ data class CallRecord(
     val promptTokens: Long,
     val completionTokens: Long,
     val totalTokens: Long,
+    /**
+     * 本次请求命中上游前缀缓存的输入 token（按 OpenAI 口径，视为 [promptTokens] 的子集）。
+     * 上游没报就是 0——「没报」与「命中 0」在界面上都会显示 0，属已知取舍。
+     */
+    val cachedTokens: Long = 0,
     /** 上游回报的本次积分消耗（如 Loomy 的 points_consumed），无则 0。 */
     val pointsConsumed: Long = 0,
     val durationMillis: Long,
@@ -49,9 +54,15 @@ data class UsageStats(
     val promptTokens: Long = 0,
     val completionTokens: Long = 0,
     val totalTokens: Long = 0,
+    /** 命中前缀缓存的输入 token 合计；命中率 = cachedTokens / promptTokens。 */
+    val cachedTokens: Long = 0,
     val success: Long = 0,
     val failed: Long = 0,
-)
+) {
+    /** 命中率（0~100 的百分比）；没有输入 token 时返回 null（无意义，不编造 0%）。 */
+    val cacheHitPercent: Double?
+        get() = if (promptTokens > 0) cachedTokens.toDouble() * 100.0 / promptTokens else null
+}
 
 /**
  * 调用记录存储。
@@ -302,6 +313,7 @@ class CallLogStore(
                     promptTokens = obj.get("promptTokens")?.asLong ?: 0L,
                     completionTokens = obj.get("completionTokens")?.asLong ?: 0L,
                     totalTokens = obj.get("totalTokens")?.asLong ?: 0L,
+                    cachedTokens = obj.get("cachedTokens")?.asLong ?: 0L,
                     pointsConsumed = obj.get("pointsConsumed")?.asLong ?: 0L,
                     durationMillis = obj.get("durationMillis")?.asLong ?: 0L,
                     error = obj.get("error")?.asString.orEmpty(),
@@ -434,6 +446,7 @@ private fun CallRecord.toJson(): JsonObject = JsonObject().apply {
     addProperty("promptTokens", promptTokens)
     addProperty("completionTokens", completionTokens)
     addProperty("totalTokens", totalTokens)
+    addProperty("cachedTokens", cachedTokens)
     addProperty("pointsConsumed", pointsConsumed)
     addProperty("durationMillis", durationMillis)
     addProperty("error", error)
@@ -447,6 +460,7 @@ private operator fun UsageStats.plus(record: CallRecord) = copy(
     promptTokens = promptTokens + record.promptTokens,
     completionTokens = completionTokens + record.completionTokens,
     totalTokens = totalTokens + record.totalTokens,
+    cachedTokens = cachedTokens + record.cachedTokens,
     success = success + if (record.status == CallStatus.SUCCESS) 1 else 0,
     failed = failed + if (record.status == CallStatus.FAILED) 1 else 0,
 )
@@ -456,6 +470,7 @@ private operator fun UsageStats.minus(record: CallRecord) = copy(
     promptTokens = (promptTokens - record.promptTokens).coerceAtLeast(0),
     completionTokens = (completionTokens - record.completionTokens).coerceAtLeast(0),
     totalTokens = (totalTokens - record.totalTokens).coerceAtLeast(0),
+    cachedTokens = (cachedTokens - record.cachedTokens).coerceAtLeast(0),
     success = (success - if (record.status == CallStatus.SUCCESS) 1 else 0).coerceAtLeast(0),
     failed = (failed - if (record.status == CallStatus.FAILED) 1 else 0).coerceAtLeast(0),
 )
@@ -465,13 +480,14 @@ private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
     addProperty("promptTokens", promptTokens)
     addProperty("completionTokens", completionTokens)
     addProperty("totalTokens", totalTokens)
+    addProperty("cachedTokens", cachedTokens)
     addProperty("success", success)
     addProperty("failed", failed)
 }
 
 private fun UsageStats.isZero(): Boolean =
     requests == 0L && promptTokens == 0L && completionTokens == 0L &&
-        totalTokens == 0L && success == 0L && failed == 0L
+        totalTokens == 0L && cachedTokens == 0L && success == 0L && failed == 0L
 
 private fun usageStatsFromJson(raw: String): UsageStats {
     val obj = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return UsageStats()
@@ -480,6 +496,7 @@ private fun usageStatsFromJson(raw: String): UsageStats {
         promptTokens = obj.get("promptTokens")?.asLong ?: 0L,
         completionTokens = obj.get("completionTokens")?.asLong ?: 0L,
         totalTokens = obj.get("totalTokens")?.asLong ?: 0L,
+        cachedTokens = obj.get("cachedTokens")?.asLong ?: 0L,
         success = obj.get("success")?.asLong ?: 0L,
         failed = obj.get("failed")?.asLong ?: 0L,
     )
