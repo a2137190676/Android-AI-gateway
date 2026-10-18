@@ -18,6 +18,9 @@ import java.util.UUID
  * Antigravity 的 `cloudcode-pa.googleapis.com/v1internal:*` 只认 Gemini 的 `contents` 结构：
  * role 用 `user`/`model`（不是 `assistant`），`systemInstruction` 必须是带 `parts` 的对象，
  * 且 JSON Schema 里不支持 `const`/`$ref`/`$schema` 等字段（会 400）。这些坑都在这层处理。
+ *
+ * 多处字段口径对照 CLIProxyAPI（MIT，router-for-me，https://github.com/router-for-me/CLIProxyAPI）
+ * 的实现；来源汇总见仓库根目录 THIRD-PARTY-NOTICES.md。
  */
 object OpenAiGemini {
 

@@ -9,7 +9,8 @@ import kotlin.test.assertEquals
  * 上游鉴权失败与部分业务错误回的是 **HTTP 200 + 业务码**，不是 4xx；未知模型 id 也会
  * 200 静默回落默认模型。因此分类必须「**先看正文 marker、后看状态码**」，否则失效账号会被
  * 判成普通客户端错误——既不禁用也不冷却，问题被静默吃掉。
- * 参照实现：`multi2api/internal/loomy/errorclassifier.go`、`Patrick130306/loomy2api`。
+ * 参照实现：`multi2api/internal/loomy/errorclassifier.go`、`Patrick130306/loomy2api`
+ * （MIT，https://github.com/Practice019/multi2api、https://github.com/Patrick130306/loomy2api）。
  */
 class LoomyErrorsTest {
 

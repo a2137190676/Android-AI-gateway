@@ -10,7 +10,8 @@ import dev.aigw.core.util.arrayOrNull
  *
  * 为什么必须确定性派生：上游普遍按「会话 id」给提示词缓存分桶，同一段对话每请求换一个 id
  * 就会落到不同桶——长上下文下实测 0% 前缀命中、积分多花约 3 倍（CodeBuddy 的
- * `X-Conversation-ID` 踩过这个坑；参照实现 `simplast/workbuddy-api` 的 `deriveConversationId`）。
+ * `X-Conversation-ID` 踩过这个坑；参照实现 `simplast/workbuddy-api` 的 `deriveConversationId`，
+ * MIT，https://github.com/simplast/workbuddy-api）。
  * 所以凡是上游要「会话 id / chatid / sessionId」的地方都必须用本函数，不要用随机 UUID。
  *
  * 请与「每请求必须换新」的 id 区分开：请求 id / 消息 id / traceparent 每请求换新才是对的。

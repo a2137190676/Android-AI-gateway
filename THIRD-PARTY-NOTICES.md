@@ -1,0 +1,147 @@
+# 第三方来源与致谢
+
+本项目的上游协议实现与部分 UI 参数，参考了下列开源项目、官方文档与官方客户端的公开产物。
+凡直接借鉴代码、常量或算法的地方，均在对应源码注释中标注来源；本文件汇总全部来源、作者、
+许可证与具体借鉴内容，便于审计与履行许可证义务。
+
+> 说明：本项目与下表任何项目及其背后的公司均无隶属关系。所有「逆向」「实测」类来源，
+> 仅用于让第三方客户端能够使用自己账号的额度，不涉及绕过付费或分发专有资产。
+
+## 一、开源项目
+
+### 1. CLIProxyAPI
+
+- 地址：https://github.com/router-for-me/CLIProxyAPI
+- 作者：router-for-me 及贡献者
+- 许可证：MIT
+- 借鉴内容（Antigravity / Gemini 通道为主）：
+  - Antigravity 请求体 envelope 结构与 `geminiToAntigravity` 的字段映射（`core/.../protocol/OpenAiGemini.kt`）
+  - `parametersJsonSchema` 字段名、`thinkingConfig` 映射、工具响应 `id` 必带、安全过滤默认关闭
+  - `paidTier` 积分请求体（`ideType=ANTIGRAVITY`）、订阅层级展示名映射
+  - 客户端版本下限 2.23.0 与兜底版本、daily/prod 端点优先级、内部模型过滤清单
+  - `invalid_grant` 按 401 语义降温（issue #4130）、临期 5 分钟才刷新的安全窗口
+  - 空响应必须保持可检测为失败（`CustomProviderEmptyResponseTest` 锁住的行为）
+
+### 2. magpie
+
+- 地址：https://github.com/yetone/magpie
+- 作者：yetone 及贡献者
+- 许可证：MIT
+- 借鉴内容（WorkBuddy / CodeBuddy 通道）：
+  - 工具 schema 归一化规则（`core/.../provider/codebuddy/CodeBuddyToolSchema.kt`）
+  - 「Claude Code / Codex CLI 特征文本」替换表——上游以 `Illegal API invocation from an unapproved channel`
+    拒绝带这些特征文本的请求，替换表来自其用真实客户端逐词实测的结论
+  - 错误分类与重试口径的对照
+
+### 3. workbuddy2api-panel
+
+- 地址：https://github.com/linguo2625469/workbuddy2api-panel
+- 作者：linguo2625469
+- 许可证：MIT
+- 借鉴内容（WorkBuddy / CodeBuddy 通道）：
+  - 企业账号（`enterpriseId` 非空）没有个人成长体系：签到、成长任务、任务列表直接短路不发请求
+  - 工具结果后紧跟 user 消息时插入一条空 assistant（上游 400 11153）
+  - 成长任务接口 `/v2/activity/growth/tasks` 的字段口径
+
+### 4. workbuddy-api
+
+- 地址：https://github.com/simplast/workbuddy-api
+- 作者：simplast
+- 许可证：MIT
+- 借鉴内容：
+  - `deriveConversationId`：`X-Conversation-ID` 由消息前缀确定性派生（同会话稳定、不同会话不同）。
+    本项目把该算法抽到 `core/.../protocol/ConversationFingerprint.kt`，WorkBuddy 与 Loomy 共用
+  - 官方 CLI 的会话 ID 头族（`X-Conversation-Request-ID` / `X-Conversation-Message-ID` 等）
+
+### 5. multi2api
+
+- 地址：https://github.com/Practice019/multi2api
+- 作者：Practice019
+- 许可证：MIT
+- 借鉴内容：
+  - Loomy 错误分类「先正文 marker、后状态码」的顺序（上游失效信号常是 HTTP 200 + 业务码）
+  - 多账号池、熔断与重试策略的对照
+
+### 6. loomy2api
+
+- 地址：https://github.com/Patrick130306/loomy2api
+- 作者：Patrick130306
+- 许可证：MIT
+- 借鉴内容：
+  - Loomy 协议文档（`docs/PROTOCOL.md`，由其从官方桌面客户端 0.9.38 解包整理）：
+    必带头（`traceparent` 缺失会挂到超时、`loomy-version` 仅做存在性校验）、
+    `ChatId`/`MsgId`/`TurnId` 属于**可选计费归因头**而非缓存分桶键、session 14 天无刷新令牌、
+    积分模型 `availableBalance = balance + dailyBalance`
+  - 该文档纠正了本项目 2.11.0 关于「Loomy 会话 id 决定缓存桶」的错误假设（2.11.2 已回滚）
+
+### 7. wild-work
+
+- 地址：https://github.com/rockswang/wild-work
+- 作者：rockswang
+- 许可证：**仓库未声明许可证**（截至 2026-10-18 根目录无 LICENSE / COPYING / NOTICE）
+- 借鉴内容：**仅参考协议行为与错误码结论，未复制任何代码**
+  - Trae 签到/积分接口对设备指纹头的要求（缺任一项上游以 9074「当前参与用户太多」拒绝）
+  - Trae 国际版错误码与区域端点行为
+
+### 8. Android-AI-gateway（同源 fork）
+
+- 地址：https://github.com/x3284728970/Android-AI-gateway
+- 作者：夕白（x3284728970）
+- 许可证：MIT
+- 说明：与本项目同源。1.5.0 起同步过其分支上的以下改动：
+  Trae 区域化（cn/global 双区域、端点与额度接口版本）、区域前缀路由（`trae-cn/...`）、
+  Loomy 国家码、CodeBuddy 成长中心；2.3.0 的模型页分组折叠也移植自该 fork。
+
+### 9. open-claude-ui
+
+- 地址：https://github.com/Caho1/open-claude-ui
+- 作者：Caho1
+- 许可证：MIT
+- 借鉴内容（UI / 动效，本项目为 Compose 实现，只移植参数与算法，未复制代码）：
+  - 四套物理弹簧预设（`app/.../ui/Motion.kt` 的 `Springs`）：
+    Bouncy k=600/c=30/m=1（ζ≈0.612）、Snappy k=320/c=28（ζ≈0.783）、
+    Gentle k=380/c=18（ζ≈0.462）、HeavySnap k=1200/c=80/m=0.1（过阻尼）
+  - 7 档非线性 Alpha 滚动渐隐遮罩（`Modifier.scrollFade`）：
+    15/30/45/60/75/87% 采样点对应 alpha 0.051/0.149/0.302/0.502/0.702/0.851，触顶触底 2px 归零
+  - 状态动效时序：陶土呼吸灯（scale 0.86→1，3s）、思考三点波浪（1.2s，每点错开 160ms）
+  - 思考/详情折叠曲线 `cubic-bezier(.19,1,.22,1)` 200ms（`LogsScreen.DetailBlock`）
+  - Token 环形仪表做法：`strokeDasharray = 2πr`、`strokeDashoffset = circumference × (1 − ratio)`
+    （`MeScreen.CacheHitGauge`）
+
+  按 MIT 要求，随附其许可全文：
+
+  ```
+  MIT License
+
+  Copyright (c) Caho1
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+  ```
+
+## 二、官方文档与官方客户端（非代码借鉴）
+
+| 来源 | 用途 | 位置 |
+|---|---|---|
+| docs.trae.cn《内置模型限时折扣》 | Trae 模型积分倍率（基准/折扣） | `core/.../provider/trae/ModelRate.kt` |
+| forum.trae.cn 帖子（173840 / 175814 / 178015 / 178262） | 社区实测倍率与模型上新公告 | 同上（每条倍率 note 均标注帖子号） |
+| 商汤小浣熊桌面客户端（`.deb` 解包） | 积分余额/流水/桌面端登录奖励的端点与响应结构 | `core/.../provider/raccoon/RaccoonProvider.kt` |
+| 讯飞 Loomy 桌面客户端 0.9.38（Electron 包） | 请求头、签名算法、模型目录结构 | `core/.../provider/loomy/` |
+
+官方文档与官方客户端产物只用于确认字段语义，不随本项目分发任何专有二进制资产
+（字体、音频、客户端安装包等均不包含在本仓库中）。

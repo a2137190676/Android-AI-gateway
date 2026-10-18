@@ -33,7 +33,9 @@ object TraeHeaders {
      * 签到 / 积分查询（api.trae.cn）使用的头。
      *
      * 这里的设备指纹头是必须的：UG 接口会校验设备指纹，缺任一项上游会以 9074
-     * 「当前参与用户太多」为由拒绝签到（实测结论，见 rockswang/wild-work 的逆向文档与 issue）。
+     * 「当前参与用户太多」为由拒绝签到（实测结论，见 rockswang/wild-work
+     * 的逆向文档与 issue；该仓库未声明许可证，仅参考其协议结论、未复制代码：
+     * https://github.com/rockswang/wild-work）。
      */
     fun ug(c: HttpURLConnection, a: TraeAccount, v: TraeVersion, region: TraeRegion = TraeRegion.CN) {
         c.setRequestProperty("Content-Type", "application/json")

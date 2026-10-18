@@ -243,3 +243,6 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
 4. **测试要求**：`:core:test` 全绿才能出包。协议相关改动必须先加失败用例再修（复现→修→锁住）。
 5. **构建三坑**（aarch64 PRoot 容器）：JDK 必须 17；必须 `LD_PRELOAD=/opt/android-sdk/lib/libdelfix.so`；aapt2/zipalign 必须用 aarch64 静态版（备份在 `~/.aicode/backup/`）。详见全局记忆 `android-build-arm64-proot`。
 6. **版本纪律**：每次交付 versionCode+1 / versionName patch+1；出包后 `aapt2 dump badging` 核对；产物命名 `ai-gateway-<版本>-release.apk`。
+7. **外部来源必须可追溯**：上游协议细节、UI 动效参数凡参考了外部项目，都要在代码注释里写明来源，
+   并在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 汇总（项目名 / 作者 / 地址 / 许可证 / 具体借鉴内容）。
+   提交信息正文同样要标注「借鉴自 <仓库>（作者，协议）：<内容>」。没有许可证的项目只参考行为与结论，不复制代码。

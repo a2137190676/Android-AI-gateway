@@ -12,7 +12,8 @@ import kotlin.test.assertTrue
  * 上游按 `X-Conversation-ID` 给提示词缓存分桶：同一个会话的多轮请求必须是**同一个值**
  * （否则每次请求落到不同桶，长上下文下实测 0% 前缀命中、积分多花约 3 倍），
  * 不同会话必须不同（否则互相污染缓存桶）。
- * 参照实现：`simplast/workbuddy-api` 的 `deriveConversationId`。
+ * 参照实现：`simplast/workbuddy-api` 的 `deriveConversationId`
+ * （MIT，https://github.com/simplast/workbuddy-api）。
  */
 class CodeBuddyConversationIdTest {
 

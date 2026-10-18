@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
  * 上游对企业号签到回 `400 code 10001`、成长中心回
  * `403 growth system is only available for personal users`；企业额度走
  * `get-enterprise-user-usage`。网关必须**直接短路、不发请求**，否则每次点签到都白撞一次。
- * 参照实现：`linguo2625469/workbuddy2api-panel`。
+ * 参照实现：`linguo2625469/workbuddy2api-panel`（MIT，https://github.com/linguo2625469/workbuddy2api-panel）。
  */
 class CodeBuddyGrowthGatingTest {
 

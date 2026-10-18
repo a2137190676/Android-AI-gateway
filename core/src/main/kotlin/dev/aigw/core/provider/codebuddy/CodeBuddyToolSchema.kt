@@ -16,7 +16,8 @@ import java.io.InputStream
  * 直接回 400「Invalid request parameters」（业务码 11133）**——DeepSeek 系模型对
  * 下列每一条都敏感，Kimi/GPT/Gemini/GLM 系对其中一部分敏感。
  *
- * 规则逐条来自官方渠道的实测记录（`magpie` 插件的 workbuddy README）：
+ * 规则逐条来自官方渠道的实测记录（`magpie` 插件的 workbuddy README，
+ * MIT，yetone，https://github.com/yetone/magpie）：
  * ① 根级无 `type`／`type` 为空／根级是联合（`anyOf`/`oneOf`/`allOf`）的，一律当对象，
  *    并把联合各分支的字段合并；
  * ② `pattern` 里的 `\0` 要写成 `\u0000`；

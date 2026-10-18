@@ -1397,7 +1397,8 @@ private fun normalizeCodeBuddyMessages(obj: JsonObject) {
  * 上游会以「Illegal API invocation from an unapproved channel」拦下带第三方 CLI 特征文本的请求
  * （Claude Code / Codex CLI 的系统提示词片段），这几处按等义写法替换即可通过。
  *
- * 替换表来自公开实现 magpie（用真实客户端逐词实测得出），两套发行版都适用。
+ * 替换表来自公开实现 magpie（MIT，yetone，https://github.com/yetone/magpie；
+ * 用真实客户端逐词实测得出），两套发行版都适用。
  */
 private val FLAGGED_TEXT = listOf(
     Regex("x-anthropic-billing-header:[^\\n]*\\n?", RegexOption.IGNORE_CASE) to "",

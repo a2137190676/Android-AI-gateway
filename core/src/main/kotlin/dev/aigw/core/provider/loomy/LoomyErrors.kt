@@ -92,7 +92,8 @@ object LoomyErrors {
      *
      * 上游鉴权失败与部分业务错误回的是 **HTTP 200 + 业务码**，只看状态码会把失效账号
      * 判成普通客户端错误——既不禁用也不冷却，问题被静默吃掉。参照实现
-     * （`multi2api/internal/loomy/errorclassifier.go`、`Patrick130306/loomy2api`）都按
+     * （`multi2api/internal/loomy/errorclassifier.go`、`Patrick130306/loomy2api`；
+     * MIT，https://github.com/Practice019/multi2api 与 https://github.com/Patrick130306/loomy2api）都按
      * 「先正文、后状态码」的顺序分类，这里对齐。
      */
     fun fromStatus(status: Int, body: String): LoomyErrorKind {

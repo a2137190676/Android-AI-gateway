@@ -8,7 +8,8 @@ import java.util.concurrent.atomic.AtomicReference
  * Antigravity 客户端版本号。
  *
  * 上游按 `User-Agent` 里的客户端版本决定可用模型：**低于 2.23.0 的客户端拿不到新模型**
- * （CLIProxyAPI 的注释明写这一点：`Cloud Code rejects newer models for clients below 2.23.0`），
+ * （CLIProxyAPI 的注释明写这一点：`Cloud Code rejects newer models for clients below 2.23.0`；
+ * MIT，router-for-me，https://github.com/router-for-me/CLIProxyAPI），
  * 版本写死会让账号随着上游推进逐渐失效。这里改成从官方自动更新清单取，并缓存 [TTL_MILLIS]。
  *
  * 取不到时用 [FALLBACK_VERSION]（等于 CLIProxyAPI 的兜底值），绝不因此让请求失败。
