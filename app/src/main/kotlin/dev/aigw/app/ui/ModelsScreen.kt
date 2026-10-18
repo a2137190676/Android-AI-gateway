@@ -225,18 +225,25 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
                             )
                             SectionLabel(title)
                             if (cachedGroup) {
-                                Box(
+                                Row(
                                     modifier = Modifier
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f))
-                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                        .padding(start = 6.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 ) {
+                                    Box(
+                                        Modifier.breathingDot(MaterialTheme.colorScheme.error, size = 6.dp),
+                                    )
                                     Text(
                                         text = "缓存",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onErrorContainer,
                                     )
                                 }
+                            } else {
+                                Box(Modifier.breathingDot(MaterialTheme.colorScheme.tertiary, size = 6.dp))
                             }
                             Box(Modifier.weight(1f))
                             if (exposure.filterEnabled) {

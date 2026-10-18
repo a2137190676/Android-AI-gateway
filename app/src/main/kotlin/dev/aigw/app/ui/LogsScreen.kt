@@ -1,6 +1,9 @@
 package dev.aigw.app.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -206,8 +210,10 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
             }
         }
 
+        val listState = rememberLazyListState()
         LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth().scrollFade(listState),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -288,18 +294,26 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
                 append(TIME_FORMAT.format(Date(record.startedAtMillis)))
                 append(" · ")
                 append(if (record.streaming) "流式" else "非流式")
-                append(" · ${record.durationMillis}ms")
-                if (record.totalTokens > 0) append(" · ${record.totalTokens} tokens")
-                if (record.cachedTokens > 0 && record.promptTokens > 0) {
-                    val hitPercent = String.format(Locale.US, "%.0f", record.cachedTokens * 100.0 / record.promptTokens)
-                    append(" · 命中 ${formatTokens(record.cachedTokens)}/输入 ${formatTokens(record.promptTokens)} ($hitPercent%)")
-                }
-                if (record.pointsConsumed > 0) append(" · 消耗 ${record.pointsConsumed} 积分")
-                if (record.accountNickname.isNotEmpty()) append(" · ${record.accountNickname}")
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            MetricChip("耗时", "${record.durationMillis}ms", MaterialTheme.colorScheme.onSurfaceVariant)
+            if (record.totalTokens > 0) {
+                MetricChip("tokens", formatTokens(record.totalTokens), MaterialTheme.colorScheme.primary)
+            }
+            if (record.cachedTokens > 0 && record.promptTokens > 0) {
+                val hitPercent = String.format(Locale.US, "%.0f", record.cachedTokens * 100.0 / record.promptTokens)
+                MetricChip("命中", "$hitPercent%", MaterialTheme.colorScheme.tertiary)
+            }
+            if (record.pointsConsumed > 0) {
+                MetricChip("积分", record.pointsConsumed.toString(), MaterialTheme.colorScheme.secondary)
+            }
+            if (record.accountNickname.isNotEmpty()) {
+                MetricChip("账号", record.accountNickname, MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         if (record.error.isNotEmpty()) {
             Text(
                 text = record.error,
@@ -308,6 +322,31 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
                 maxLines = 2,
             )
         }
+    }
+}
+
+/** 一条指标胶囊：等宽数字 + 标签，用于把 token/命中/耗时等压成一行可扫读的信息。 */
+@Composable
+private fun MetricChip(label: String, value: String, tone: Color) {
+    Row(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(tone.copy(alpha = 0.10f))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            color = tone,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -528,6 +567,8 @@ private fun RequestLogSettings(state: AppUiState, viewModel: AppViewModel) {
 private fun DetailBlock(title: String, body: String, note: String?, onCopy: () -> Unit) {
     // 大文本折叠：全文可达 512K 字符，一次性组合进 Text 会让抽屉首帧明显卡顿；
     // 默认只渲染预览，点「展开全文」后再渲染完整内容。
+    // 折叠用弹性高度过渡（借鉴 open-claude-ui 的 0fr↔1fr 思路，在 Compose 里对应
+    // animateContentSize + 与思考折叠相同的 200ms 曲线），避免瞬间跳变。
     var expanded by remember(body) { mutableStateOf(body.length <= PREVIEW_CHARS) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -571,6 +612,9 @@ private fun DetailBlock(title: String, body: String, note: String?, onCopy: () -
                 .fillMaxWidth()
                 .clip(MaterialTheme.shapes.medium)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
+                .animateContentSize(
+                    animationSpec = tween(200, easing = CubicBezierEasing(0.19f, 1f, 0.22f, 1f)),
+                )
                 .padding(12.dp),
         )
     }

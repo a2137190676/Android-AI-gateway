@@ -29,14 +29,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.core.usage.StorageAudit
+import dev.aigw.core.usage.UsageStats
 import java.util.Locale
 
 @Composable
@@ -348,6 +354,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     ) {
         SectionCard(enterIndex = 3) {
             SectionLabel("今日")
+            CacheHitGauge(state.today)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 StatCell(formatCount(state.today.requests), "请求")
                 StatCell(formatCount(state.today.success), "成功")
@@ -363,6 +370,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
 
         SectionCard(enterIndex = 4) {
             SectionLabel("累计")
+            CacheHitGauge(state.total)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 StatCell(formatCount(state.total.requests), "请求")
                 StatCell(formatCount(state.total.success), "成功")
@@ -452,6 +460,107 @@ private fun TokenUsageRow(
 /** 缓存命中率后缀：没有缓存数据时返回 null（不显示百分比，也不显示占位符号）。 */
 private fun cacheHitSuffix(cachedTokens: Long, percent: Double?): String? =
     if (cachedTokens > 0 && percent != null) String.format(Locale.US, "（%.0f%%）", percent) else null
+
+/**
+ * 输入 token 构成环：命中缓存 / 未命中 / 输出 三段按比例分色填充，中心显示命中率。
+ *
+ * 环形绘制借鉴 open-claude-ui（MIT, Caho1）的 Token 仪表做法：
+ * `strokeDasharray = 2πr`、`strokeDashoffset = circumference × (1 − ratio)`，
+ * 各段用 offset 依次错开。没有输入 token 时只显示「—」，不画环（不编造 0%）。
+ */
+@Composable
+private fun CacheHitGauge(stats: UsageStats) {
+    val hitColor = MaterialTheme.colorScheme.tertiary
+    val missColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+    val outputColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.75f)
+    val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val hit = stats.cachedTokens.coerceAtMost(stats.promptTokens)
+    val miss = (stats.promptTokens - hit).coerceAtLeast(0)
+    val output = stats.completionTokens
+    val total = hit + miss + output
+    val percent = stats.cacheHitPercent
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(72.dp)) {
+                val stroke = 7.dp.toPx()
+                val inset = stroke / 2
+                val arcSize = Size(size.width - stroke, size.height - stroke)
+                val topLeft = Offset(inset, inset)
+                // 轨道
+                drawArc(
+                    color = trackColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+                if (total > 0L) {
+                    var start = -90f
+                    for ((value, color) in listOf(
+                        hit to hitColor,
+                        miss to missColor,
+                        output to outputColor,
+                    )) {
+                        if (value <= 0L) continue
+                        val sweep = 360f * value / total.toFloat()
+                        // 段间留 2° 缝隙，避免同色相邻时粘成一团
+                        val gap = if (sweep > 6f) 2f else 0f
+                        drawArc(
+                            color = color,
+                            startAngle = start + gap / 2,
+                            sweepAngle = (sweep - gap).coerceAtLeast(0f),
+                            useCenter = false,
+                            topLeft = topLeft,
+                            size = arcSize,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round),
+                        )
+                        start += sweep
+                    }
+                }
+            }
+            Text(
+                text = if (percent != null) "${String.format(Locale.US, "%.0f", percent)}%" else "—",
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
+            GaugeLegend("命中缓存", hit, hitColor)
+            GaugeLegend("未命中", miss, missColor)
+            GaugeLegend("输出", output, outputColor)
+        }
+    }
+}
+
+@Composable
+private fun GaugeLegend(label: String, tokens: Long, color: androidx.compose.ui.graphics.Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(
+            Modifier
+                .size(7.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(color),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = formatTokens(tokens),
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
 
 /**
  * 「并发与容错」入口的右侧元信息。
