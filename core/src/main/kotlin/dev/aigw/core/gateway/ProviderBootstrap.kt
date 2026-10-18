@@ -40,6 +40,7 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
         LoomyProvider(
             defaultModel = { engine.providerSettings(LoomyProvider.ID).defaultModel },
             nowMillis = { engine.now() },
+            hooks = engine.hooks,
         ),
     )
 

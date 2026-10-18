@@ -12,6 +12,7 @@ import dev.aigw.core.provider.isStreamingBody
 import dev.aigw.core.provider.OpenAiSseAggregator
 import dev.aigw.core.provider.Provider
 import dev.aigw.core.provider.ProviderAccount
+import dev.aigw.core.provider.ProviderHooks
 import dev.aigw.core.provider.ProviderActionResult
 import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.ProviderModel
@@ -34,6 +35,7 @@ class LoomyProvider(
     private val defaultModel: () -> String,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val pointsClient: LoomyPointsClient = LoomyPointsClient(),
+    private val hooks: ProviderHooks = ProviderHooks(),
 ) : Provider, SmsLoginSupport {
 
     override val id: String = ID
@@ -95,7 +97,11 @@ class LoomyProvider(
         } catch (e: LoomyApiException) {
             return FailedChatCall(e.status, e.body)
         }
-        if (call.status !in 200..299) return FailedChatCall(call.status, call.errorBody)
+        if (call.status !in 200..299) {
+            // 失败原文只进日志：调用记录里只留截断的错误体，排查 409 这类无描述状态码全靠这一行。
+            hooks.onLog("Loomy 对话失败（HTTP ${call.status}）：${call.errorBody.take(500)}")
+            return FailedChatCall(call.status, call.errorBody)
+        }
 
         // 上游回 JSON：可能是正常非流式响应，也可能是「HTTP 200 + 业务错误码」
         if (!call.isEventStream) {
