@@ -187,7 +187,7 @@ private fun models(engine: GatewayEngine) {
 
 private fun usage(engine: GatewayEngine) {
     val stats = engine.callLogStore.totalStats()
-    println("累计请求 ${stats.requests}，成功 ${stats.success}，失败 ${stats.failed}，tokens ${stats.totalTokens}")
+    println("累计请求 ${stats.requests}，成功 ${stats.success}，失败 ${stats.failed}，中断 ${stats.aborted}，tokens ${stats.totalTokens}")
     if (stats.cachedTokens > 0 && stats.promptTokens > 0) {
         val hitPercent = String.format(java.util.Locale.US, "%.0f", stats.cachedTokens * 100.0 / stats.promptTokens)
         println("提示词命中 ${stats.cachedTokens} / 输入 ${stats.promptTokens}（$hitPercent%）")

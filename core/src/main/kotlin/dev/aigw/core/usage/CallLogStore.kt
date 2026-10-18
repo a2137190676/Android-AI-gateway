@@ -58,6 +58,8 @@ data class UsageStats(
     val cachedTokens: Long = 0,
     val success: Long = 0,
     val failed: Long = 0,
+    /** 客户端中途断开（流式中断）的请求数；三者相加应等于 [requests]。 */
+    val aborted: Long = 0,
 ) {
     /** 命中率（0~100 的百分比）；没有输入 token 时返回 null（无意义，不编造 0%）。 */
     val cacheHitPercent: Double?
@@ -463,6 +465,7 @@ private operator fun UsageStats.plus(record: CallRecord) = copy(
     cachedTokens = cachedTokens + record.cachedTokens,
     success = success + if (record.status == CallStatus.SUCCESS) 1 else 0,
     failed = failed + if (record.status == CallStatus.FAILED) 1 else 0,
+    aborted = aborted + if (record.status == CallStatus.ABORTED) 1 else 0,
 )
 
 private operator fun UsageStats.minus(record: CallRecord) = copy(
@@ -473,6 +476,7 @@ private operator fun UsageStats.minus(record: CallRecord) = copy(
     cachedTokens = (cachedTokens - record.cachedTokens).coerceAtLeast(0),
     success = (success - if (record.status == CallStatus.SUCCESS) 1 else 0).coerceAtLeast(0),
     failed = (failed - if (record.status == CallStatus.FAILED) 1 else 0).coerceAtLeast(0),
+    aborted = (aborted - if (record.status == CallStatus.ABORTED) 1 else 0).coerceAtLeast(0),
 )
 
 private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
@@ -483,11 +487,12 @@ private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
     addProperty("cachedTokens", cachedTokens)
     addProperty("success", success)
     addProperty("failed", failed)
+    addProperty("aborted", aborted)
 }
 
 private fun UsageStats.isZero(): Boolean =
     requests == 0L && promptTokens == 0L && completionTokens == 0L &&
-        totalTokens == 0L && cachedTokens == 0L && success == 0L && failed == 0L
+        totalTokens == 0L && cachedTokens == 0L && success == 0L && failed == 0L && aborted == 0L
 
 private fun usageStatsFromJson(raw: String): UsageStats {
     val obj = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return UsageStats()
@@ -499,5 +504,6 @@ private fun usageStatsFromJson(raw: String): UsageStats {
         cachedTokens = obj.get("cachedTokens")?.asLong ?: 0L,
         success = obj.get("success")?.asLong ?: 0L,
         failed = obj.get("failed")?.asLong ?: 0L,
+        aborted = obj.get("aborted")?.asLong ?: 0L,
     )
 }
