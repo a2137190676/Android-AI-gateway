@@ -233,8 +233,9 @@ fun Modifier.shimmer(
  * 按 15/30/45/60/75/87% 六个采样点铺 alpha 0.051/0.149/0.302/0.502/0.702/0.851，
  * 曲线贴合 y≈x^1.5 的感知幂律。触顶/触底（阈值 2px）时该侧羽化归零，边缘恢复完全清晰。
  *
- * Compose 侧用 `BlendMode.DstIn` 叠一层黑色竖直渐变，只有 alpha 参与运算，
- * 效果等同 CSS 的 `mask-image`。
+ * Compose 侧用「背景色渐变叠层」实现：逐档从背景色渐到透明，颜色就是页面底色，
+ * 因此不会引入额外色调（用 `BlendMode.DstIn` 画黑色遮罩必须配合离屏图层，
+ * 直接画会把内容染黑，见 2.12.0 的记录页底部黑条）。
  *
  * [listState] 传入时按实际滚动位置动态开关；不传则两侧常开（用于拿不到列表状态的容器）。
  */
@@ -243,16 +244,29 @@ fun Modifier.scrollFade(
     listState: LazyListState? = null,
     fadeSize: Dp = 28.dp,
 ): Modifier {
-    val fadeTop by remember(listState) {
+    val background = MaterialTheme.colorScheme.background
+    // 内容不满一屏（不可滚动）时两侧都不该有渐隐，否则底部会凭空多出一条色带
+    val scrollable by remember(listState) {
         if (listState == null) {
             derivedStateOf { true }
+        } else {
+            derivedStateOf {
+                val layout = listState.layoutInfo
+                layout.totalItemsCount > 0 &&
+                    layout.visibleItemsInfo.lastOrNull()?.let { it.offset + it.size } ?: 0 > layout.viewportEndOffset
+            }
+        }
+    }
+    val fadeTop by remember(listState, scrollable) {
+        if (listState == null || !scrollable) {
+            derivedStateOf { false }
         } else {
             derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 2 }
         }
     }
-    val fadeBottom by remember(listState) {
-        if (listState == null) {
-            derivedStateOf { true }
+    val fadeBottom by remember(listState, scrollable) {
+        if (listState == null || !scrollable) {
+            derivedStateOf { false }
         } else {
             derivedStateOf {
                 val layout = listState.layoutInfo
@@ -271,36 +285,35 @@ fun Modifier.scrollFade(
         val colors = ArrayList<Color>(16)
         val stops = ArrayList<Float>(16)
         if (top > 0f) {
-            // 顶部：全透明 → 不透明，六个非线性采样点
-            val alphas = floatArrayOf(0f, 0.051f, 0.149f, 0.302f, 0.502f, 0.702f, 0.851f, 1f)
+            // 顶部：背景色（不透明） → 透明，六个非线性采样点
+            val alphas = floatArrayOf(1f, 0.851f, 0.702f, 0.502f, 0.302f, 0.149f, 0.051f, 0f)
             val positions = floatArrayOf(0f, 0.15f, 0.30f, 0.45f, 0.60f, 0.75f, 0.87f, 1f)
             val span = top / size.height
             for (i in alphas.indices) {
-                colors.add(Color.Black.copy(alpha = alphas[i]))
+                colors.add(background.copy(alpha = alphas[i]))
                 stops.add(span * positions[i])
             }
         } else {
-            colors.add(Color.Black)
+            colors.add(background.copy(alpha = 0f))
             stops.add(0f)
         }
         if (bottom > 0f) {
-            // 底部：镜像对称
-            val alphas = floatArrayOf(1f, 0.851f, 0.702f, 0.502f, 0.302f, 0.149f, 0.051f, 0f)
+            // 底部：透明 → 背景色（不透明），镜像对称
+            val alphas = floatArrayOf(0f, 0.051f, 0.149f, 0.302f, 0.502f, 0.702f, 0.851f, 1f)
             val positions = floatArrayOf(0f, 0.13f, 0.25f, 0.40f, 0.55f, 0.70f, 0.85f, 1f)
             val span = bottom / size.height
             for (i in alphas.indices) {
-                colors.add(Color.Black.copy(alpha = alphas[i]))
+                colors.add(background.copy(alpha = alphas[i]))
                 stops.add(1f - span + span * positions[i])
             }
         } else {
-            colors.add(Color.Black)
+            colors.add(background.copy(alpha = 0f))
             stops.add(1f)
         }
         drawRect(
             brush = Brush.verticalGradient(
                 colorStops = Array(colors.size) { i -> stops[i] to colors[i] },
             ),
-            blendMode = BlendMode.DstIn,
         )
     }
 }

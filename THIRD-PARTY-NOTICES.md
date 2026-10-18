@@ -83,16 +83,7 @@
   - Trae 签到/积分接口对设备指纹头的要求（缺任一项上游以 9074「当前参与用户太多」拒绝）
   - Trae 国际版错误码与区域端点行为
 
-### 8. Android-AI-gateway（同源 fork）
-
-- 地址：https://github.com/x3284728970/Android-AI-gateway
-- 作者：夕白（x3284728970）
-- 许可证：MIT
-- 说明：与本项目同源。1.5.0 起同步过其分支上的以下改动：
-  Trae 区域化（cn/global 双区域、端点与额度接口版本）、区域前缀路由（`trae-cn/...`）、
-  Loomy 国家码、CodeBuddy 成长中心；2.3.0 的模型页分组折叠也移植自该 fork。
-
-### 9. open-claude-ui
+### 8. open-claude-ui
 
 - 地址：https://github.com/Caho1/open-claude-ui
 - 作者：Caho1

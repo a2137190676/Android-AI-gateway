@@ -338,8 +338,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     // 存储占用不挂在全局 refresh 里（要扫全量存储键并解密，代价高），
     // 本页「存储」卡片读的是 state 里的同一份，不主动刷新会恒为 0，故进入本页时算一次。
     LaunchedEffect(Unit) { viewModel.refreshStorage() }
-    val todayCacheHit = cacheHitSuffix(state.today.cachedTokens, state.today.cacheHitPercent)
-    val totalCacheHit = cacheHitSuffix(state.total.cachedTokens, state.total.cacheHitPercent)
     PageScaffold(
         title = "用量统计",
         subtitle = "累计与今日",
@@ -361,11 +359,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StatCell(formatCount(state.today.failed), "失败")
                 StatCell(formatCount(state.today.aborted), "中断")
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            TokenUsageRow("输入 Tokens", state.today.promptTokens, MaterialTheme.colorScheme.primary)
-            TokenUsageRow("缓存命中 Tokens", state.today.cachedTokens, MaterialTheme.colorScheme.primary, suffix = todayCacheHit)
-            TokenUsageRow("输出 Tokens", state.today.completionTokens, MaterialTheme.colorScheme.tertiary)
-            TokenUsageRow("总计 Tokens", state.today.totalTokens, MaterialTheme.colorScheme.secondary)
         }
 
         SectionCard(enterIndex = 4) {
@@ -377,11 +370,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StatCell(formatCount(state.total.failed), "失败")
                 StatCell(formatCount(state.total.aborted), "中断")
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            TokenUsageRow("输入 Tokens", state.total.promptTokens, MaterialTheme.colorScheme.primary)
-            TokenUsageRow("缓存命中 Tokens", state.total.cachedTokens, MaterialTheme.colorScheme.primary, suffix = totalCacheHit)
-            TokenUsageRow("输出 Tokens", state.total.completionTokens, MaterialTheme.colorScheme.tertiary)
-            TokenUsageRow("总计 Tokens", state.total.totalTokens, MaterialTheme.colorScheme.secondary)
         }
 
         SectionCard(enterIndex = 5) {
@@ -394,72 +382,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         }
     }
 }
-
-
-/** 方案 C：用量统计单项明细行 */
-@Composable
-private fun TokenUsageRow(
-    label: String,
-    tokens: Long,
-    indicatorColor: androidx.compose.ui.graphics.Color,
-    suffix: String? = null,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(indicatorColor),
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                text = formatCount(tokens),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            if (tokens >= 1_000L) {
-                Text(
-                    text = formatTokens(tokens),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            if (suffix != null) {
-                Text(
-                    text = suffix,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-            }
-        }
-    }
-}
-
-/** 缓存命中率后缀：没有缓存数据时返回 null（不显示百分比，也不显示占位符号）。 */
-private fun cacheHitSuffix(cachedTokens: Long, percent: Double?): String? =
-    if (cachedTokens > 0 && percent != null) String.format(Locale.US, "（%.0f%%）", percent) else null
 
 /**
  * 输入 token 构成环：命中缓存 / 未命中 / 输出 三段按比例分色填充，中心显示命中率。
@@ -531,10 +453,20 @@ private fun CacheHitGauge(stats: UsageStats) {
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
-            GaugeLegend("命中缓存", hit, hitColor)
-            GaugeLegend("未命中", miss, missColor)
-            GaugeLegend("输出", output, outputColor)
+        // 没有任何 token 数据时只留一个空环 + 「—」：图例全为 0 没有信息量，还会与上方的请求数重复
+        if (total > 0L) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
+                GaugeLegend("命中缓存", hit, hitColor)
+                GaugeLegend("未命中", miss, missColor)
+                GaugeLegend("输出", output, outputColor)
+            }
+        } else {
+            Text(
+                text = "还没有 token 用量",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
