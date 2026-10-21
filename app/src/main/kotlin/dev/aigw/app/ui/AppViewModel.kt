@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.aigw.app.data.ApkInstaller
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
@@ -49,6 +50,10 @@ import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.provider.trae.TraeRegion
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
+import dev.aigw.core.update.ApkDownloader
+import dev.aigw.core.update.MirrorSpeedTest
+import dev.aigw.core.update.UpdateRepository
+import dev.aigw.core.update.UpdateSources
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.LogLine
 import dev.aigw.core.usage.StorageReport
@@ -61,8 +66,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.File
 
 /** 验证码重发间隔（秒）：上游有频率限制，连点只会被拒。 */
 private const val SMS_RESEND_INTERVAL_MS = 60_000L
@@ -72,12 +76,6 @@ private const val GOLD_PERSIST_DEBOUNCE_MS = 300L
 
 /** 项目仓库地址（GitHub）。 */
 private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
-
-/** GitHub 最新 Release 接口（API 地址；网页地址 .../releases/latest 返回 HTML，不能当 JSON 解析）。 */
-private const val RELEASES_API = "https://api.github.com/repos/xibai6668/Android-AI-gateway/releases/latest"
-
-/** GitHub API 要求请求带 User-Agent。 */
-private const val UPDATE_UA = "ai-gateway-android"
 
 /** 外观偏好：动态取色、明暗模式、页面底色与金色渐变两端。 */
 class AppearanceStore(private val store: KeyValueStore) {
@@ -170,7 +168,31 @@ class UpdateStore(private val store: KeyValueStore) {
 }
 
 /** 检查更新发现的新版本信息。 */
-data class UpdateInfo(val version: String, val url: String, val notes: String)
+data class UpdateInfo(
+    val version: String,
+    /** 发布页地址（浏览器打开用）。 */
+    val url: String,
+    val notes: String,
+    /** APK 直链；为空时只能去发布页手动下载。 */
+    val apkUrl: String? = null,
+    val apkSize: Long = 0L,
+)
+
+/** 应用内更新的下载阶段（界面据此切换「测速中 / 下载中 / 可安装 / 失败」）。 */
+sealed interface UpdateDownload {
+    /** 正在并发测速所有线路。 */
+    data object Probing : UpdateDownload
+    data class Downloading(
+        val downloaded: Long,
+        val total: Long,
+        val bytesPerSecond: Long,
+        val source: String,
+        val threads: Int,
+    ) : UpdateDownload
+    /** 下载完成且已校验可安装。 */
+    data class Ready(val path: String, val source: String) : UpdateDownload
+    data class Failed(val reason: String) : UpdateDownload
+}
 
 sealed interface ModelTestStatus {
     data object Testing : ModelTestStatus
@@ -289,6 +311,10 @@ data class AppUiState(
     val updateChecking: Boolean = false,
     /** 检查到的新版本；非空时界面弹更新窗。 */
     val updateInfo: UpdateInfo? = null,
+    /** 线路测速结果（按速度降序）；非空时更新页展示各线路带宽。 */
+    val updateProbes: List<dev.aigw.core.update.SpeedProbe> = emptyList(),
+    /** 应用内更新下载进度；null 表示没有进行中的下载。 */
+    val updateDownload: UpdateDownload? = null,
     /** 是否自动检查更新（启动时每天最多一次）。 */
     val autoCheckUpdate: Boolean = true,
 ) {
@@ -352,6 +378,12 @@ class AppViewModel(
 
     /** 金色渐变去抖落盘的挂起任务；每次取色取消上一轮，松手后才真正写盘。 */
     private var persistAppearanceJob: Job? = null
+
+    /** 应用内更新的下载任务；取消时置 [cancelRequested] 让分段线程尽快收手。 */
+    private var updateJob: Job? = null
+
+    @Volatile
+    private var cancelRequested = false
 
     /** 账号集合签名：判断账号变化是否真的影响模型目录，避免刷新凭证也重复拉取。 */
     private var lastAccountSignature: String = ""
@@ -1392,10 +1424,6 @@ class AppViewModel(
         viewModelScope.launch { withContext(Dispatchers.IO) { updateStore.setAutoCheck(enabled) } }
     }
 
-    fun dismissUpdate() {
-        _state.value = _state.value.copy(updateInfo = null)
-    }
-
     fun openProjectRepo() {
         if (!openBrowser(PROJECT_URL)) {
             _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开项目地址")
@@ -1405,6 +1433,133 @@ class AppViewModel(
     fun openReleasePage(url: String) {
         if (!openBrowser(url)) {
             _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开下载页")
+        }
+    }
+
+    /**
+     * 应用内更新：先并发测速所有线路（GitHub 直连 + 国内镜像），再让最快的线路
+     * 多线程下载 APK。测速结果留在 state 里供界面展示，下载失败时用户可直接在列表里换线路重试。
+     */
+    fun downloadUpdate(info: UpdateInfo) {
+        val apkUrl = info.apkUrl ?: run {
+            _state.value = _state.value.copy(
+                updateDownload = UpdateDownload.Failed("该版本没有提供 APK，请前往发布页手动下载"),
+            )
+            return
+        }
+        if (_state.value.updateDownload is UpdateDownload.Probing ||
+            _state.value.updateDownload is UpdateDownload.Downloading
+        ) {
+            return
+        }
+        cancelRequested = false
+        _state.value = _state.value.copy(
+            updateDownload = UpdateDownload.Probing,
+            updateProbes = emptyList(),
+        )
+        val target = File(File(app.cacheDir, "updates").apply { mkdirs() }, "update-${info.version}.apk")
+        updateJob = viewModelScope.launch {
+            val probes = withContext(Dispatchers.IO) {
+                MirrorSpeedTest().measure(apkUrl, UpdateSources.DOWNLOAD)
+            }
+            if (cancelRequested) return@launch
+            _state.value = _state.value.copy(updateProbes = probes)
+            // 竞速失败的线路仍然可以试：顺序按测速带宽降序
+            val candidates = probes.map { it.source }
+                .ifEmpty { UpdateSources.DOWNLOAD }
+            downloadWithCandidates(info, apkUrl, target, candidates)
+        }
+    }
+
+    /** 手动指定线路下载（用户在测速列表里点某一条）。 */
+    fun downloadUpdateFrom(info: UpdateInfo, source: dev.aigw.core.update.MirrorSource) {
+        val apkUrl = info.apkUrl ?: return
+        cancelRequested = false
+        _state.value = _state.value.copy(updateDownload = UpdateDownload.Probing)
+        val target = File(File(app.cacheDir, "updates").apply { mkdirs() }, "update-${info.version}.apk")
+        updateJob = viewModelScope.launch { downloadWithCandidates(info, apkUrl, target, listOf(source)) }
+    }
+
+    /** 依次尝试候选线路：某条失败就换下一条，全部失败才报错。 */
+    private suspend fun downloadWithCandidates(
+        info: UpdateInfo,
+        apkUrl: String,
+        target: File,
+        candidates: List<dev.aigw.core.update.MirrorSource>,
+    ) {
+        var lastError = "没有可用的下载线路"
+        for (source in candidates) {
+            if (cancelRequested) return
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    target.delete()
+                    ApkDownloader().download(
+                        url = apkUrl,
+                        source = source,
+                        targetPath = target.path,
+                        isCancelled = { cancelRequested },
+                        onProgress = { done, total, speed ->
+                            val totalBytes = if (total > 0) total else info.apkSize
+                            _state.value = _state.value.copy(
+                                updateDownload = UpdateDownload.Downloading(
+                                    downloaded = done,
+                                    total = totalBytes,
+                                    bytesPerSecond = speed,
+                                    source = source.label,
+                                    threads = ApkDownloader.THREADS,
+                                ),
+                            )
+                        },
+                    )
+                }
+            }
+            result.fold(
+                onSuccess = {
+                    val archiveVersion = ApkInstaller.archiveVersion(app, target)
+                    if (archiveVersion == null) {
+                        lastError = "下载包无法识别（${source.label}）"
+                        target.delete()
+                        return@fold
+                    }
+                    _state.value = _state.value.copy(
+                        updateDownload = UpdateDownload.Ready(target.path, source.label),
+                    )
+                    return
+                },
+                onFailure = { e ->
+                    if (cancelRequested) return
+                    lastError = "${source.label}：${e.message ?: "下载失败"}"
+                    target.delete()
+                },
+            )
+        }
+        if (!cancelRequested) {
+            _state.value = _state.value.copy(updateDownload = UpdateDownload.Failed(lastError))
+        }
+    }
+
+    fun cancelUpdateDownload() {
+        cancelRequested = true
+        updateJob?.cancel()
+        updateJob = null
+        _state.value = _state.value.copy(updateDownload = null)
+    }
+
+    /** 安装已下载的 APK：无「安装未知应用」权限时先引导去授权。 */
+    fun installUpdate() {
+        val ready = _state.value.updateDownload as? UpdateDownload.Ready ?: return
+        val file = File(ready.path)
+        if (!file.exists()) {
+            _state.value = _state.value.copy(updateDownload = UpdateDownload.Failed("安装包已不存在，请重新下载"))
+            return
+        }
+        if (!ApkInstaller.canInstall(app)) {
+            _state.value = _state.value.copy(notice = "请允许本应用安装未知来源应用后重试")
+            ApkInstaller.openInstallPermission(app)
+            return
+        }
+        if (!ApkInstaller.install(app, file)) {
+            _state.value = _state.value.copy(notice = "没有可用的安装器")
         }
     }
 
@@ -1439,29 +1594,16 @@ class AppViewModel(
         }
     }
 
-    /** 直连 GitHub 取最新 Release（不走代理，按用户选择）。 */
+    /** 直连 GitHub 取最新 Release（多线路竞争，不在主线程阻塞）。 */
     private fun fetchLatestRelease(): UpdateInfo {
-        val conn = (URL(RELEASES_API).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 10_000
-            setRequestProperty("Accept", "application/vnd.github+json")
-            setRequestProperty("User-Agent", UPDATE_UA)
-        }
-        try {
-            val status = conn.responseCode
-            if (status == 404) throw IllegalStateException("暂无发布版本")
-            if (status !in 200..299) throw IllegalStateException("HTTP $status")
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val obj = JsonParser.parseString(body).asJsonObject
-            val version = obj.get("tag_name")?.asString?.trim().orEmpty().removePrefix("v")
-            if (version.isEmpty()) throw IllegalStateException("未找到版本信息")
-            val url = obj.get("html_url")?.asString.orEmpty().ifEmpty { "$PROJECT_URL/releases" }
-            val notes = obj.get("body")?.asString.orEmpty().trim()
-            return UpdateInfo(version = version, url = url, notes = notes)
-        } finally {
-            conn.disconnect()
-        }
+        val release = UpdateRepository.fetchLatest()
+        return UpdateInfo(
+            version = release.version,
+            url = release.pageUrl,
+            notes = release.notes,
+            apkUrl = release.apkUrl,
+            apkSize = release.apkSize,
+        )
     }
 
     /** 逐段比较版本号，远端更大返回 true。 */
@@ -1476,10 +1618,10 @@ class AppViewModel(
         return false
     }
 
-    private fun installedVersionName(): String = runCatching {
+    /** 当前安装的版本名（更新页展示用）。 */
+    fun installedVersionName(): String = runCatching {
         app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
     }.getOrDefault("")
-
     private fun currentEpochDay(): Long = java.time.LocalDate.now().toEpochDay()
 
     // ------------------------------------------------------------------ 内部

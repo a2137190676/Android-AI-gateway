@@ -74,6 +74,7 @@ import dev.aigw.app.ui.SecurityProtectionScreen
 import dev.aigw.app.ui.SubPage
 import dev.aigw.app.ui.TaskCenterScreen
 import dev.aigw.app.ui.UsageScreen
+import dev.aigw.app.ui.UpdateScreen
 import dev.aigw.app.ui.providers.ProviderUiRegistry
 import dev.aigw.app.ui.theme.AiGatewayTheme
 import dev.aigw.app.ui.theme.AppColors
@@ -244,6 +245,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
+                SubPage.Update -> UpdateScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
                     state = state,
@@ -260,9 +262,11 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         }
     }
 
-    state.updateInfo?.let { info ->
+    // 更新弹窗的「稍后」只在本次会话内生效：关掉后更新页仍能继续操作已发现的新版本
+    var updatePromptDismissed by remember(state.updateInfo?.version) { mutableStateOf(false) }
+    state.updateInfo?.takeIf { !updatePromptDismissed }?.let { info ->
         AlertDialog(
-            onDismissRequest = { viewModel.dismissUpdate() },
+            onDismissRequest = { updatePromptDismissed = true },
             title = { Text("发现新版本 ${info.version}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -289,12 +293,12 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.openReleasePage(info.url)
-                    viewModel.dismissUpdate()
-                }) { Text("前往下载") }
+                    updatePromptDismissed = true
+                    subPage = SubPage.Update
+                }) { Text(if (info.apkUrl == null) "前往下载" else "立即更新") }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissUpdate() }) { Text("稍后") }
+                TextButton(onClick = { updatePromptDismissed = true }) { Text("稍后") }
             },
         )
     }

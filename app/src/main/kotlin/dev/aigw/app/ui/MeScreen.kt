@@ -164,10 +164,14 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
 
         EditorialRow(
             "04.1",
-            "检查更新 · CHECK UPDATE",
-            "从 GitHub Releases 获取最新版本",
-            if (state.updateChecking) "检查中…" else "",
-        ) { if (!state.updateChecking) viewModel.checkUpdate() }
+            "应用更新 · UPDATE",
+            "多线路测速、多线程下载与安装",
+            when {
+                state.updateChecking -> "检查中…"
+                state.updateInfo != null -> "v${state.updateInfo.version} 可用"
+                else -> appVersion(context).substringBefore("（")
+            },
+        ) { open(SubPage.Update) }
 
         EditorialRow(
             "04.2",

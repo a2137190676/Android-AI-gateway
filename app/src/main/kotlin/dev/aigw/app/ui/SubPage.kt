@@ -35,4 +35,7 @@ sealed interface SubPage {
 
     /** 外观主题：明暗模式、配色方案与金色文字。 */
     data object AppearanceTheme : SubPage
+
+    /** 应用更新：多线路测速、多线程下载与安装。 */
+    data object Update : SubPage
 }
