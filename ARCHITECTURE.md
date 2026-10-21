@@ -106,7 +106,6 @@
 | `service/FloatingKeepAlive.kt` | 可选的「悬浮窗保活」：`TYPE_APPLICATION_OVERLAY` 小悬浮标签（可拖动、点按回应用），由前台服务按开关启停 |
 | `data/EncryptedKeyValueStore.kt` | 写操作用 `commit()`（同步）而非 `apply()`——换 token 后必须立刻可读 |
 | `data/ApkInstaller.kt` | 应用内更新安装：校验安装包版本、「安装未知应用」权限引导、FileProvider 交付系统安装器 |
-| `ui/UpdateScreen.kt` | 应用更新页：线路测速列表（可点选指定线路）、下载进度与速度、安装/重试 |
 | `ui/ModelsScreen.kt` | 模型列表：点击复制、Q弹测速按钮 |
 | `ui/ResilienceScreen.kt` | 并发与容错设置页：并发闸门参数、重试退避、熔断器（每个对话框一个参数组） |
 | `ui/LogsScreen.kt` | 记录页：调用记录（详情可展开全文、大文本折叠）+ 请求日志（级别过滤/清空/容量设置在标签旁） |

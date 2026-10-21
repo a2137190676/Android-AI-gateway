@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -74,7 +77,9 @@ import dev.aigw.app.ui.SecurityProtectionScreen
 import dev.aigw.app.ui.SubPage
 import dev.aigw.app.ui.TaskCenterScreen
 import dev.aigw.app.ui.UsageScreen
-import dev.aigw.app.ui.UpdateScreen
+import dev.aigw.app.ui.formatBytes
+import dev.aigw.app.ui.formatSpeed
+import dev.aigw.app.ui.UpdateDownload
 import dev.aigw.app.ui.providers.ProviderUiRegistry
 import dev.aigw.app.ui.theme.AiGatewayTheme
 import dev.aigw.app.ui.theme.AppColors
@@ -245,7 +250,6 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
-                SubPage.Update -> UpdateScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
                     state = state,
@@ -262,11 +266,13 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         }
     }
 
-    // 更新弹窗的「稍后」只在本次会话内生效：关掉后更新页仍能继续操作已发现的新版本
+    // 「稍后」只在本次会话内生效：关掉后仍可用「检查更新」重新拉出更新弹窗
     var updatePromptDismissed by remember(state.updateInfo?.version) { mutableStateOf(false) }
+    val download = state.updateDownload
+    val updateBusy = download is UpdateDownload.Probing || download is UpdateDownload.Downloading
     state.updateInfo?.takeIf { !updatePromptDismissed }?.let { info ->
         AlertDialog(
-            onDismissRequest = { updatePromptDismissed = true },
+            onDismissRequest = { if (!updateBusy) updatePromptDismissed = true },
             title = { Text("发现新版本 ${info.version}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -289,16 +295,60 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                             modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
                         )
                     }
+                    // 应用内更新的进度就摆在更新日志下方，不另开页面
+                    when (download) {
+                        is UpdateDownload.Probing -> Text(
+                            "正在测速直连与国内镜像…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        is UpdateDownload.Downloading -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "${download.source} · ${formatBytes(download.downloaded)} / ${formatBytes(download.total)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            LinearProgressIndicator(
+                                progress = {
+                                    if (download.total <= 0) 0f
+                                    else (download.downloaded.toFloat() / download.total).coerceIn(0f, 1f)
+                                },
+                                modifier = Modifier.fillMaxWidth().height(6.dp),
+                            )
+                            Text(
+                                "${formatSpeed(download.bytesPerSecond)} · ${download.threads} 线程并发",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        is UpdateDownload.Ready -> Text(
+                            "安装包已就绪（${download.source}），点「安装」完成更新。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        is UpdateDownload.Failed -> Text(
+                            "下载失败：${download.reason}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        null -> Unit
+                    }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    updatePromptDismissed = true
-                    subPage = SubPage.Update
-                }) { Text(if (info.apkUrl == null) "前往下载" else "立即更新") }
+                when (download) {
+                    is UpdateDownload.Ready -> TextButton(onClick = { viewModel.installUpdate() }) { Text("安装") }
+                    is UpdateDownload.Failed, null -> TextButton(onClick = {
+                        if (info.apkUrl == null) viewModel.openReleasePage(info.url) else viewModel.downloadUpdate(info)
+                    }) { Text(if (info.apkUrl == null) "前往下载" else "应用内更新") }
+                    else -> TextButton(onClick = { viewModel.cancelUpdateDownload() }) { Text("取消下载") }
+                }
             },
             dismissButton = {
-                TextButton(onClick = { updatePromptDismissed = true }) { Text("稍后") }
+                TextButton(onClick = {
+                    if (updateBusy) viewModel.cancelUpdateDownload()
+                    updatePromptDismissed = true
+                }) { Text("稍后") }
             },
         )
     }

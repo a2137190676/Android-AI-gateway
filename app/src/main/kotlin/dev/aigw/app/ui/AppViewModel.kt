@@ -311,8 +311,6 @@ data class AppUiState(
     val updateChecking: Boolean = false,
     /** 检查到的新版本；非空时界面弹更新窗。 */
     val updateInfo: UpdateInfo? = null,
-    /** 线路测速结果（按速度降序）；非空时更新页展示各线路带宽。 */
-    val updateProbes: List<dev.aigw.core.update.SpeedProbe> = emptyList(),
     /** 应用内更新下载进度；null 表示没有进行中的下载。 */
     val updateDownload: UpdateDownload? = null,
     /** 是否自动检查更新（启动时每天最多一次）。 */
@@ -1436,9 +1434,8 @@ class AppViewModel(
         }
     }
 
-    /**
-     * 应用内更新：先并发测速所有线路（GitHub 直连 + 国内镜像），再让最快的线路
-     * 多线程下载 APK。测速结果留在 state 里供界面展示，下载失败时用户可直接在列表里换线路重试。
+    /** 应用内更新：先并发测速所有线路（GitHub 直连 + 国内镜像），再让最快的线路
+     * 多线程下载 APK；某条失败就依次换下一条。
      */
     fun downloadUpdate(info: UpdateInfo) {
         val apkUrl = info.apkUrl ?: run {
@@ -1453,31 +1450,16 @@ class AppViewModel(
             return
         }
         cancelRequested = false
-        _state.value = _state.value.copy(
-            updateDownload = UpdateDownload.Probing,
-            updateProbes = emptyList(),
-        )
-        val target = File(File(app.cacheDir, "updates").apply { mkdirs() }, "update-${info.version}.apk")
-        updateJob = viewModelScope.launch {
-            val probes = withContext(Dispatchers.IO) {
-                MirrorSpeedTest().measure(apkUrl, UpdateSources.DOWNLOAD)
-            }
-            if (cancelRequested) return@launch
-            _state.value = _state.value.copy(updateProbes = probes)
-            // 竞速失败的线路仍然可以试：顺序按测速带宽降序
-            val candidates = probes.map { it.source }
-                .ifEmpty { UpdateSources.DOWNLOAD }
-            downloadWithCandidates(info, apkUrl, target, candidates)
-        }
-    }
-
-    /** 手动指定线路下载（用户在测速列表里点某一条）。 */
-    fun downloadUpdateFrom(info: UpdateInfo, source: dev.aigw.core.update.MirrorSource) {
-        val apkUrl = info.apkUrl ?: return
-        cancelRequested = false
         _state.value = _state.value.copy(updateDownload = UpdateDownload.Probing)
         val target = File(File(app.cacheDir, "updates").apply { mkdirs() }, "update-${info.version}.apk")
-        updateJob = viewModelScope.launch { downloadWithCandidates(info, apkUrl, target, listOf(source)) }
+        updateJob = viewModelScope.launch {
+            // 线路按实测带宽降序；全部探测失败时退回内置顺序逐一尝试
+            val candidates = withContext(Dispatchers.IO) {
+                MirrorSpeedTest().measure(apkUrl, UpdateSources.DOWNLOAD)
+            }.map { it.source }.ifEmpty { UpdateSources.DOWNLOAD }
+            if (cancelRequested) return@launch
+            downloadWithCandidates(info, apkUrl, target, candidates)
+        }
     }
 
     /** 依次尝试候选线路：某条失败就换下一条，全部失败才报错。 */
@@ -1618,10 +1600,11 @@ class AppViewModel(
         return false
     }
 
-    /** 当前安装的版本名（更新页展示用）。 */
-    fun installedVersionName(): String = runCatching {
+    /** 当前安装的版本名。 */
+    private fun installedVersionName(): String = runCatching {
         app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
     }.getOrDefault("")
+
     private fun currentEpochDay(): Long = java.time.LocalDate.now().toEpochDay()
 
     // ------------------------------------------------------------------ 内部
