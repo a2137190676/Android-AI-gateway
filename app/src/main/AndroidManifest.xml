@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 应用内更新安装 APK：缺这条声明时 canRequestPackageInstalls() 恒为 false，
+         系统「安装未知应用」列表也不会出现本应用，点安装会静默失败 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.BIND_QUICK_SETTINGS_TILE" />
     <!-- 可选的悬浮窗保活：在屏幕上留一个小窗，降低后台被系统回收的概率 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />

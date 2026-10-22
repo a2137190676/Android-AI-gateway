@@ -276,6 +276,15 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
             title = { Text("发现新版本 ${info.version}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!viewModel.canInstallUpdate()) {
+                        // 旧版本（含 v2.13.1）缺少 REQUEST_INSTALL_PACKAGES，应用内安装必然失败
+                        Text(
+                            "已更新至 v2.13.1 版本的用户需点击项目仓库下载更新，因为应用内更新有 bug",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Text(
                         "更新日志",
                         style = MaterialTheme.typography.labelMedium,
@@ -322,7 +331,11 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                             )
                         }
                         is UpdateDownload.Ready -> Text(
-                            "安装包已就绪（${download.source}），点「安装」完成更新。",
+                            if (viewModel.canInstallUpdate()) {
+                                "安装包已就绪（${download.source}），点「安装」完成更新。"
+                            } else {
+                                "本版本无法应用内安装，请点下方「到仓库下载」手动更新。"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -337,7 +350,11 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
             },
             confirmButton = {
                 when (download) {
-                    is UpdateDownload.Ready -> TextButton(onClick = { viewModel.installUpdate() }) { Text("安装") }
+                    is UpdateDownload.Ready -> TextButton(onClick = {
+                        // 自身包没有 REQUEST_INSTALL_PACKAGES 时系统安装器根本不会被唤起，
+                        // 直接给用户可行的出路，不让人反复点一个必然失败的按钮。
+                        if (viewModel.canInstallUpdate()) viewModel.installUpdate() else viewModel.openReleasePage(info.url)
+                    }) { Text(if (viewModel.canInstallUpdate()) "安装" else "到仓库下载") }
                     is UpdateDownload.Failed, null -> TextButton(onClick = {
                         if (info.apkUrl == null) viewModel.openReleasePage(info.url) else viewModel.downloadUpdate(info)
                     }) { Text(if (info.apkUrl == null) "前往下载" else "应用内更新") }

@@ -1527,7 +1527,10 @@ class AppViewModel(
         _state.value = _state.value.copy(updateDownload = null)
     }
 
-    /** 安装已下载的 APK：无「安装未知应用」权限时先引导去授权。 */
+    /** 本包自身是否具备安装 APK 的能力（清单里声明了 REQUEST_INSTALL_PACKAGES）。 */
+    fun canInstallUpdate(): Boolean = ApkInstaller.canRequestInstall(app)
+
+    /** 安装已下载的 APK：无「安装未知应用」权限时先引导去授权，授权页打不开要说清楚。 */
     fun installUpdate() {
         val ready = _state.value.updateDownload as? UpdateDownload.Ready ?: return
         val file = File(ready.path)
@@ -1536,12 +1539,20 @@ class AppViewModel(
             return
         }
         if (!ApkInstaller.canInstall(app)) {
-            _state.value = _state.value.copy(notice = "请允许本应用安装未知来源应用后重试")
-            ApkInstaller.openInstallPermission(app)
+            // 打不开授权页通常意味着包内没声明 REQUEST_INSTALL_PACKAGES（2.13.1 及更早即如此），
+            // 这时只能让用户去仓库手动下载，不能只弹一句「请授权」让人反复点。
+            val opened = ApkInstaller.openInstallPermission(app)
+            _state.value = _state.value.copy(
+                notice = if (opened) {
+                    "请在设置里允许本应用安装未知来源应用，返回后再点安装"
+                } else {
+                    "本版本应用内更新无法安装，请到项目仓库下载更新"
+                },
+            )
             return
         }
         if (!ApkInstaller.install(app, file)) {
-            _state.value = _state.value.copy(notice = "没有可用的安装器")
+            _state.value = _state.value.copy(notice = "没有可用的安装器，请到项目仓库下载更新")
         }
     }
 
