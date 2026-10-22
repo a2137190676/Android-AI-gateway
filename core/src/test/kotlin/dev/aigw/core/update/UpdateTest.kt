@@ -3,6 +3,8 @@ package dev.aigw.core.update
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.net.ServerSocket
+import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -186,5 +188,35 @@ class MirrorSpeedTestProbeTest {
         )
         assertEquals(2, probes.size)
         assertTrue(probes.none { it.ok })
+    }
+
+    @Test
+    fun `慢线路不会拖住整个测速阶段`() {
+        // 一个故意不回响应头的服务：模拟实测中首次请求挂十几秒的镜像
+        val stalled = ServerSocket(0)
+        val accepted = java.util.concurrent.CopyOnWriteArrayList<java.net.Socket>()
+        val acceptor = thread(isDaemon = true) {
+            runCatching { while (true) accepted += stalled.accept() }
+        }
+        try {
+            val budgetMs = 1_000L
+            val startedAt = System.currentTimeMillis()
+            val probes = MirrorSpeedTest(
+                probeBytes = 4096,
+                timeoutMs = 30_000,
+                totalBudgetMs = budgetMs,
+            ).measure(
+                url = "http://127.0.0.1:1/app.apk",
+                sources = listOf(MirrorSource("stalled", "挂住的镜像", "http://127.0.0.1:${stalled.localPort}/")),
+            )
+            val elapsed = System.currentTimeMillis() - startedAt
+            assertEquals(1, probes.size)
+            assertEquals("超时", probes.first().error)
+            assertTrue(elapsed < budgetMs + 2_000, "测速应在预算内结束，实际 ${elapsed}ms")
+        } finally {
+            runCatching { stalled.close() }
+            accepted.forEach { runCatching { it.close() } }
+            acceptor.interrupt()
+        }
     }
 }

@@ -5,6 +5,7 @@ import java.net.URL
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * 一次测速结果。[bytesPerSecond] 为测得带宽（低于 1KB 的探测视作失败，记 0）。
@@ -42,10 +43,13 @@ typealias ProgressCallback = (downloaded: Long, total: Long, bytesPerSecond: Lon
  * 就是真下载会用的线路。
  *
  * 采样窗口取 1~2 秒：更短会被 TCP 慢启动夸大差异，更长让用户等得不耐烦（4 条线路并行测）。
+ * 另有整体截止时间：镜像偶发卡住时（实测某镜像首次请求挂了 18 秒）不能拖住整个测速阶段。
  */
 class MirrorSpeedTest(
     private val probeBytes: Int = 512 * 1024,
     private val timeoutMs: Int = 8_000,
+    /** 整个测速阶段的上限；超时仍无结果的线路按「超时」判不可用。 */
+    private val totalBudgetMs: Long = 3_500,
 ) {
 
     /**
@@ -60,8 +64,17 @@ class MirrorSpeedTest(
         }
         return try {
             val futures = sources.map { source -> pool.submit(Callable { probe(source, url) }) }
-            futures.mapNotNull { runCatching { it.get() }.getOrNull() }
-                .sortedWith(compareByDescending<SpeedProbe> { it.ok }.thenByDescending { it.bytesPerSecond })
+            val deadline = System.currentTimeMillis() + totalBudgetMs
+            futures.mapIndexed { index, future ->
+                val remaining = deadline - System.currentTimeMillis()
+                val result = if (remaining > 0) {
+                    runCatching { future.get(remaining, TimeUnit.MILLISECONDS) }.getOrNull()
+                } else {
+                    null
+                }
+                // 超时/异常的线路也要占位：界面上一行「超时」比线路凭空消失更好懂
+                result ?: SpeedProbe(sources[index], 0, 0, "超时")
+            }.sortedWith(compareByDescending<SpeedProbe> { it.ok }.thenByDescending { it.bytesPerSecond })
         } finally {
             pool.shutdownNow()
         }
