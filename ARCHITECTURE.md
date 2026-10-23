@@ -204,6 +204,8 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
   - **Gemini 4 Argon 有独立的周日额度**（bucketId 形如 `gemini-argon-wtu-weekly` / `gemini-4-argon`，仅周窗口）。它是**模型级**配额：耗尽只影响 argon 模型，绝不能拿来当账号级余额，否则选号会把还有额度的账号判死（同「错误作用域」铁律）。
   - 周配额耗尽时，Google 会把对应 5h 桶标 `disabled: true` 且 `remainingFraction: 1`；这类桶必须跳过，否则界面会出现一条「0% 使用」的假进度条。
   - 账号级余额 = 共享池最紧窗口；模型专属池单独以 `QuotaPack.scope`（「仅 gemini-4-argon」）展示，并写进 `creditInfo.detail` 的「独立配额」段。
+  - **配额/订阅类端点必须用 CLI UA**（`antigravity/cli/<ver> linux/amd64`）而不是对话 UA（`antigravity/hub/<ver> darwin/arm64`）：Google 按 UA 分流，hub UA 打 `retrieveUserQuotaSummary`/`loadCodeAssist` 会被 403 拒掉，看起来就像「授权失效」。对话/流式生成仍用 hub UA。
+  - **额度查询路径的 403 不等于登录失效**：403 常见于权限/订阅分流（free-tier 访问部分 RPC 返回 `SUBSCRIPTION_REQUIRED`），此时应降级继续查配额并把真实状态码写进 detail；只有 401 才是重新登录。对话路径的 `classify` 仍保持 401/403 → `SESSION_DEAD`（见第 5 节铁律，勿改）。
 
 ### 腾讯 WorkBuddy
 - 上游**拒绝非流式**：必须强制 `stream:true`，网关侧聚合。

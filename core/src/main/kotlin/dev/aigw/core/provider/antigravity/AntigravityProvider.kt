@@ -262,13 +262,21 @@ class AntigravityProvider(
         val (paidStatus, paidBody) = try {
             loadPaidCredits(credential.accessToken)
         } catch (e: Exception) {
-            return CreditInfo(0, known = false, detail = "查询积分失败：${e.message}")
+            // 积分端点失败不代表不能查配额，先降级继续
+            return quotaCreditInfo(credential, "订阅未知", prefix = "查询积分失败：${e.message}；")
         }
         when {
-            paidStatus == 401 || paidStatus == 403 ->
+            // 额度查询与对话路径的策略不同：这里的 403 常见于权限/订阅分流
+            // （如 free-tier 访问部分 RPC 会回 SUBSCRIPTION_REQUIRED），报成「登录已失效」
+            // 会让用户白白重登一遍；只有 401 才是凭证真的无效。
+            paidStatus == 401 ->
                 return CreditInfo(0, known = false, detail = "登录状态已失效，需要重新登录")
             paidStatus !in 200..299 ->
-                return CreditInfo(0, known = false, detail = "查询积分失败（HTTP $paidStatus）：${paidBody.take(200)}")
+                return quotaCreditInfo(
+                    credential,
+                    "订阅未知",
+                    prefix = "查询积分失败（HTTP $paidStatus）：${paidBody.take(120)}；",
+                )
         }
         val assist = parsePaidAssist(paidBody)
         if (assist?.credits != null) {
@@ -545,6 +553,15 @@ class AntigravityProvider(
     /** 当前生效的 User-Agent：版本随官方清单更新，不再写死。 */
     private fun userAgent(): String = "antigravity/hub/${clientVersion()} darwin/arm64"
 
+    /**
+     * 配额/订阅类端点的 UA。
+     *
+     * Google 按 UA 分流 `retrieveUserQuotaSummary`：hub（桌面 App）UA 会被 403 拒掉，
+     * 只有 agy CLI 的 UA 才被放行（同一 token、同一路径，只差 UA）。
+     * 这类 403 不带任何提示，看上去与「授权失效」一模一样，曾因此误导用户反复重新登录。
+     */
+    private fun quotaUserAgent(): String = "antigravity/cli/${clientVersion()} linux/amd64"
+
     private fun open(url: String, accessToken: String, body: String?): HttpURLConnection {
         val headers = buildMap {
             put("Authorization", "Bearer $accessToken")
@@ -570,13 +587,20 @@ class AntigravityProvider(
         }
     }
 
-    private fun postJson(url: String, accessToken: String, body: String, connectTimeout: Int = CONNECT_TIMEOUT_MS, readTimeout: Int = READ_TIMEOUT_MS): Pair<Int, String> {
+    private fun postJson(
+        url: String,
+        accessToken: String,
+        body: String,
+        connectTimeout: Int = CONNECT_TIMEOUT_MS,
+        readTimeout: Int = READ_TIMEOUT_MS,
+        userAgent: String = userAgent(),
+    ): Pair<Int, String> {
         val conn = HttpSupport.open(
             url = url,
             method = "POST",
             headers = mapOf(
                 "Authorization" to "Bearer $accessToken",
-                "User-Agent" to userAgent(),
+                "User-Agent" to userAgent,
                 "Content-Type" to "application/json",
             ),
             body = body,
@@ -667,7 +691,7 @@ class AntigravityProvider(
         val payload = JsonObject().apply {
             add("metadata", JsonObject().apply { addProperty("ideType", "ANTIGRAVITY") })
         }.toString()
-        return postJson("$apiBase/$API_VERSION:loadCodeAssist", accessToken, payload)
+        return postJson("$apiBase/$API_VERSION:loadCodeAssist", accessToken, payload, userAgent = quotaUserAgent())
     }
 
     /**
@@ -680,21 +704,23 @@ class AntigravityProvider(
         } else {
             JsonObject().apply { addProperty("project", projectId) }.toString()
         }
-        return postJson("$quotaBase/$API_VERSION:retrieveUserQuotaSummary", accessToken, payload)
+        return postJson("$quotaBase/$API_VERSION:retrieveUserQuotaSummary", accessToken, payload, userAgent = quotaUserAgent())
     }
 
     /** 无积分可显示时，账号卡片余额取最紧窗口的剩余百分比，detail 标注订阅层级。 */
-    private fun quotaCreditInfo(credential: Credential, tierLabel: String): CreditInfo {
+    private fun quotaCreditInfo(credential: Credential, tierLabel: String, prefix: String = ""): CreditInfo {
         val (status, body) = try {
             loadQuotaSummary(credential.accessToken, credential.projectId)
         } catch (e: Exception) {
-            return CreditInfo(0, known = false, detail = "$tierLabel · 查询配额失败：${e.message}")
+            return CreditInfo(0, known = false, detail = "${prefix}查询配额失败：${e.message}")
         }
-        if (status == 401 || status == 403) {
+        if (status == 401) {
             return CreditInfo(0, known = false, detail = "登录状态已失效，需要重新登录")
         }
         if (status !in 200..299) {
-            return CreditInfo(0, known = false, detail = "$tierLabel · 查询配额失败（HTTP $status）：${body.take(200)}")
+            // 403 在配额端点是「权限/订阅限制」（如 free-tier 的 SUBSCRIPTION_REQUIRED），不是登录问题
+            val hint = if (status == 403) "（该端点需要付费订阅，非登录失效）" else ""
+            return CreditInfo(0, known = false, detail = "$prefix$tierLabel · 查询配额失败（HTTP $status）$hint：${body.take(200)}")
         }
         val buckets = parseQuotaBuckets(body)
         if (buckets.isEmpty()) {

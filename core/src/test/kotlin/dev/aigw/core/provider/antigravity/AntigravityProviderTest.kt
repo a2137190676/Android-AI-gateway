@@ -21,7 +21,11 @@ class AntigravityProviderTest {
     private val QUOTA_PATH = "/${AntigravityProvider.API_VERSION}:retrieveUserQuotaSummary"
 
     /** 记录收到的请求，供断言路径与请求体。 */
-    private class Received(val paths: MutableList<String> = mutableListOf(), val bodies: MutableList<String> = mutableListOf())
+    private class Received(
+        val paths: MutableList<String> = mutableListOf(),
+        val bodies: MutableList<String> = mutableListOf(),
+        val userAgents: MutableList<String> = mutableListOf(),
+    )
 
     /** 两个端点返回同一响应的便捷路由。 */
     private fun both(status: Int, body: String): Map<String, Pair<Int, String>> =
@@ -38,6 +42,7 @@ class AntigravityProviderTest {
             val path = exchange.requestURI.path
             received.paths += path
             received.bodies += exchange.requestBody.readBytes().toString(Charsets.UTF_8)
+            received.userAgents += exchange.requestHeaders.getFirst("User-Agent").orEmpty()
             val (status, body) = routes[path] ?: 200 to "{}"
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "application/json")
@@ -364,18 +369,6 @@ class AntigravityProviderTest {
     }
 
     @Test
-    fun `配额端点 401 时报登录失效`() = withUpstream(
-        mapOf(
-            CREDITS_PATH to (200 to "{}"),
-            QUOTA_PATH to (401 to """{"error":{"message":"unauthorized"}}"""),
-        ),
-    ) { base, _ ->
-        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
-        assertTrue(!info.known)
-        assertEquals("登录状态已失效，需要重新登录", info.detail)
-    }
-
-    @Test
     fun `creditInfo 在积分与配额都非 JSON 时带原文片段`() = withUpstream(both(200, "not json")) { base, _ ->
         val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
         assertTrue(!info.known)
@@ -425,6 +418,79 @@ class AntigravityProviderTest {
     @Test
     fun `creditPacks 在口径变化且无配额时为空`() = withUpstream(both(200, """{"unexpected":true}""")) { base, _ ->
         assertTrue(AntigravityProvider(apiBase = base, quotaBase = base).creditPacks(account()).isEmpty())
+    }
+
+    // ------------------------------------------------------- 配额端点的 UA / 错误口径
+
+    @Test
+    fun `配额端点必须用 agy CLI 的 UA 而不是对话 UA`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (200 to """{"currentTier":{"id":"free-tier"}}"""),
+            QUOTA_PATH to (200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.8"))),
+        ),
+    ) { base, received ->
+        AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
+        val index = received.paths.indexOfFirst { it == QUOTA_PATH }
+        assertTrue(index >= 0, "应请求配额端点：${received.paths}")
+        // 上游按 UA 分流：hub UA 打配额端点会被 403 拒掉，返回值本身看着就像「授权失效」
+        val ua = received.userAgents[index]
+        assertTrue(ua.contains("antigravity/cli/"), "配额端点必须用 CLI UA，实际：$ua")
+        assertTrue(!ua.contains("/hub/"), "配额端点不能用 hub UA：$ua")
+    }
+
+    @Test
+    fun `配额端点 403 时不能报登录失效`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (200 to """{"currentTier":{"id":"free-tier"}}"""),
+            // 实测：UA 不对时上游回 403（而不是 401），若当成登录失效会误导用户重新登录
+            QUOTA_PATH to (403 to """{"error":{"message":"The caller does not have permission"}}"""),
+        ),
+    ) { base, _ ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertTrue(!info.known)
+        assertTrue(
+            !info.detail.contains("登录状态已失效"),
+            "403 不应被当成登录失效（会误导用户反复重新登录）：${info.detail}",
+        )
+        assertTrue(info.detail.contains("403"), "detail 应带真实状态码：${info.detail}")
+    }
+
+    @Test
+    fun `配额端点 401 才报登录失效`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (200 to """{"currentTier":{"id":"free-tier"}}"""),
+            QUOTA_PATH to (401 to """{"error":{"message":"unauthorized"}}"""),
+        ),
+    ) { base, _ ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertTrue(!info.known)
+        assertEquals("登录状态已失效，需要重新登录", info.detail)
+    }
+
+    @Test
+    fun `loadCodeAssist 非 401 失败时仍展示配额而不是报授权失效`() = withUpstream(
+        mapOf(
+            // 免费层访问部分 RPC 会拿到 403 SUBSCRIPTION_REQUIRED；此时配额数据仍可取
+            CREDITS_PATH to (403 to """{"error":{"message":"SUBSCRIPTION_REQUIRED"}}"""),
+            QUOTA_PATH to (200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.7"))),
+        ),
+    ) { base, _ ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertEquals(70L, info.balance, "额度应以配额为准：${info.detail}")
+        assertTrue(info.known)
+        assertTrue(!info.detail.contains("登录状态已失效"), "403 不是登录失效：${info.detail}")
+    }
+
+    @Test
+    fun `loadCodeAssist 401 仍然报登录失效`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (401 to """{"error":{"message":"unauthorized"}}"""),
+            QUOTA_PATH to (200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.7"))),
+        ),
+    ) { base, _ ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertTrue(!info.known)
+        assertEquals("登录状态已失效，需要重新登录", info.detail)
     }
 
     @Test
