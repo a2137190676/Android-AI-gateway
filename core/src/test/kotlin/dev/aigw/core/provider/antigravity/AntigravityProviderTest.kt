@@ -69,6 +69,22 @@ class AntigravityProviderTest {
     private fun quotaGroup(name: String, window: String, fraction: String, resetTime: String = ""): String =
         """{"displayName":"$name","buckets":[{"bucketId":"$window","remainingFraction":$fraction,"resetTime":"$resetTime"}]}"""
 
+    /** 多个 bucket 的组（含 disabled 与自定义 displayName）。 */
+    private fun quotaGroupWithBuckets(name: String, vararg buckets: String): String =
+        """{"displayName":"$name","buckets":[${buckets.joinToString(",")}]}"""
+
+    private fun bucket(
+        id: String,
+        fraction: String,
+        displayName: String = "",
+        disabled: Boolean = false,
+        resetTime: String = "",
+    ): String {
+        val display = if (displayName.isEmpty()) "" else "\"displayName\":\"$displayName\","
+        val disabledField = if (disabled) "\"disabled\":true," else ""
+        return """{"bucketId":"$id",$disabledField$display"remainingFraction":$fraction,"resetTime":"$resetTime"}"""
+    }
+
     private fun account(expiresAt: Long = 0): ProviderAccount = ProviderAccount(
         providerId = AntigravityProvider.ID,
         uid = "u1",
@@ -414,6 +430,79 @@ class AntigravityProviderTest {
     @Test
     fun `creditPacks 在非 2xx 时为空`() = withUpstream(both(401, """{"error":{"message":"unauthorized"}}""")) { base, _ ->
         assertTrue(AntigravityProvider(apiBase = base, quotaBase = base).creditPacks(account()).isEmpty())
+    }
+
+    // ------------------------------------------------------- Gemini 4 Argon 独立配额
+
+    @Test
+    fun `周配额耗尽时被上游禁用的 5h 桶不出现在额度包里`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""),
+            QUOTA_PATH to (200 to quotaBody(
+                quotaGroupWithBuckets(
+                    "Gemini Models",
+                    // 周配额耗尽时 Google 把 5h 桶标 disabled 且 remainingFraction 给 1，
+                    // 照原样展示会画出一条「0% 使用」的假进度条
+                    bucket("gemini-weekly", "0.0", displayName = "Weekly Limit"),
+                    bucket("gemini-5h", "1", displayName = "Five Hour Limit", disabled = true),
+                ),
+            )),
+        ),
+    ) { base, _ ->
+        val packs = AntigravityProvider(apiBase = base, quotaBase = base).creditPacks(account())
+        assertEquals(1, packs.size, "被禁用的 5h 桶应跳过：$packs")
+        assertEquals("Weekly Limit", packs[0].group.substringAfter(" · "))
+        assertEquals(0L, packs[0].remain)
+    }
+
+    @Test
+    fun `Gemini 4 Argon 独立配额单独成包并标注仅限 argon`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""),
+            QUOTA_PATH to (200 to quotaBody(
+                quotaGroupWithBuckets(
+                    "Gemini Models",
+                    bucket("gemini-weekly", "0.9", displayName = "Weekly Limit"),
+                    bucket("gemini-5h", "0.6", displayName = "Five Hour Limit"),
+                ),
+                quotaGroupWithBuckets(
+                    "Gemini 4 Argon",
+                    bucket("gemini-argon-wtu-weekly", "0.3", displayName = "Weekly Limit"),
+                ),
+            )),
+        ),
+    ) { base, _ ->
+        val packs = AntigravityProvider(apiBase = base, quotaBase = base).creditPacks(account())
+        assertEquals(3, packs.size, "共享池 2 个窗口 + Argon 1 个周窗口：$packs")
+        val argon = packs.single { it.name == "Gemini 4 Argon" }
+        assertEquals(30L, argon.remain)
+        assertEquals(70L, argon.used)
+        assertTrue(argon.scope.contains("gemini-4-argon"), "Argon 包应标明适用的模型：${argon.scope}")
+        assertTrue(packs.filter { it.scope.isEmpty() }.size == 2, "共享池两个窗口不应带模型限定：$packs")
+    }
+
+    @Test
+    fun `Argon 配额耗尽不影响账号级额度判定`() = withUpstream(
+        mapOf(
+            CREDITS_PATH to (200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""),
+            QUOTA_PATH to (200 to quotaBody(
+                quotaGroupWithBuckets(
+                    "Gemini Models",
+                    bucket("gemini-weekly", "0.9", displayName = "Weekly Limit"),
+                ),
+                quotaGroupWithBuckets(
+                    "Gemini 4 Argon",
+                    bucket("gemini-argon-wtu-weekly", "0.0", displayName = "Weekly Limit"),
+                ),
+            )),
+        ),
+    ) { base, _ ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        // Argon 是模型级配额：耗尽只影响 gemini-4-argon，不能把整个账号判成 0 额度
+        assertEquals(90L, info.balance, "账号级余额应只看共享池：${info.detail}")
+        assertTrue(info.known)
+        assertTrue(info.detail.contains("Argon"), "detail 仍应告知 Argon 状态：${info.detail}")
+        assertTrue(info.detail.contains("仅 gemini-4-argon"), info.detail)
     }
 
     // ------------------------------------------------------- 凭证

@@ -61,6 +61,11 @@ data class QuotaPack(
     val remain: Long = 0,
     /** 过期时间（秒，0 表示不过期/未知）。 */
     val expireAt: Long = 0,
+    /**
+     * 仅限某些模型使用的独立配额（如 Gemini 4 Argon 的周额度）；空串表示全账号共享。
+     * 单独列出是为了不让用户把「某个模型用完」误认为「整个账号已耗尽」。
+     */
+    val scope: String = "",
 )
 
 /**

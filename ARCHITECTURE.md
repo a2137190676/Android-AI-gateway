@@ -200,6 +200,10 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
 - 非claude模型删除 `generationConfig.maxOutputTokens`（上游不接受）。
 - envelope：`{project, model, userAgent:"antigravity", requestType:"agent", requestId, request:{...sessionId}}`；sessionId 从首条 user 文本 SHA256 稳定派生。
 - 请求头白名单：Content-Type / Authorization / UA(`antigravity/hub/2.9.1 darwin/arm64`)。多余的 X-Goog-Api-Client 等头会被识别。
+- **配额口径（`retrieveUserQuotaSummary`，2026-10 起）**：共享池只有两组 —— `Gemini Models`（`gemini-5h`/`gemini-weekly`，Gemini 4 Argon、3.x Pro/Flash、Image 共用）与 `Claude and GPT models`（`3p-5h`/`3p-weekly`）。
+  - **Gemini 4 Argon 有独立的周日额度**（bucketId 形如 `gemini-argon-wtu-weekly` / `gemini-4-argon`，仅周窗口）。它是**模型级**配额：耗尽只影响 argon 模型，绝不能拿来当账号级余额，否则选号会把还有额度的账号判死（同「错误作用域」铁律）。
+  - 周配额耗尽时，Google 会把对应 5h 桶标 `disabled: true` 且 `remainingFraction: 1`；这类桶必须跳过，否则界面会出现一条「0% 使用」的假进度条。
+  - 账号级余额 = 共享池最紧窗口；模型专属池单独以 `QuotaPack.scope`（「仅 gemini-4-argon」）展示，并写进 `creditInfo.detail` 的「独立配额」段。
 
 ### 腾讯 WorkBuddy
 - 上游**拒绝非流式**：必须强制 `stream:true`，网关侧聚合。

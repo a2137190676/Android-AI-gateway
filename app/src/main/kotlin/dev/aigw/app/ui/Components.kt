@@ -491,11 +491,20 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth()) {
-            Text(
-                text = if (pack.group.isEmpty()) pack.name else "${pack.name}（${pack.group}）",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = if (pack.group.isEmpty()) pack.name else "${pack.name}（${pack.group}）",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                // 模型专属配额（如 Gemini 4 Argon 周额度）：不标出来就会被误当成账号总额度
+                if (pack.scope.isNotEmpty()) {
+                    Text(
+                        text = pack.scope,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = gold,
+                    )
+                }
+            }
             Text(
                 text = expireText,
                 style = MaterialTheme.typography.bodySmall,

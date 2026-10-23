@@ -700,15 +700,26 @@ class AntigravityProvider(
         if (buckets.isEmpty()) {
             return CreditInfo(0, known = false, detail = "$tierLabel · 上游没有返回模型组配额：${body.take(200)}")
         }
-        val tightest = buckets.minBy { it.remainingPct }
+        // 账号级额度只算共享池；模型专属池（Gemini 4 Argon 等）耗尽不代表账号不能用
+        val accountLevel = buckets.filter { !it.modelOnly }
+        val tightest = (accountLevel.ifEmpty { buckets }).minBy { it.remainingPct }
         val pct = tightest.remainingPct.roundToLong()
         val windows = buckets.joinToString(" · ") { bucket ->
             "${bucket.groupName} ${bucket.windowName} ${bucket.remainingPct.roundToLong()}%"
         }
+        // 模型专属池单独报一句：它是新加的额度限制，用户需要知道是哪块先耗尽
+        val modelOnly = buckets.filter { it.modelOnly }
+            .joinToString("；") { bucket ->
+                "${bucket.groupName} ${bucket.windowName} 剩 ${bucket.remainingPct.roundToLong()}%（${bucket.scopeLabel}）"
+            }
         return CreditInfo(
             pct,
             known = true,
-            detail = "$tierLabel · 组配额剩余 $pct%（最紧：${tightest.groupName} ${tightest.windowName}）；全部窗口：$windows",
+            detail = buildString {
+                append("$tierLabel · 组配额剩余 $pct%（最紧：${tightest.groupName} ${tightest.windowName}）")
+                if (modelOnly.isNotEmpty()) append("；独立配额：$modelOnly")
+                append("；全部窗口：$windows")
+            },
         )
     }
 
@@ -721,6 +732,7 @@ class AntigravityProvider(
                 used = bucket.usedPct.roundToLong(),
                 remain = bucket.remainingPct.roundToLong(),
                 expireAt = bucket.resetAtSeconds,
+                scope = bucket.scopeLabel,
             )
         }
 
@@ -788,11 +800,21 @@ class AntigravityProvider(
         val remainingPct: Double,
         val usedPct: Double,
         val resetAtSeconds: Long,
+        /** 模型专属配额（如 Gemini 4 Argon 独立周池），耗尽只影响对应模型。 */
+        val modelOnly: Boolean = false,
+        /** 模型专属配额的适用范围文案（仅 [modelOnly] 时非空）。 */
+        val scopeLabel: String = "",
     )
 
     /**
      * 解析 `retrieveUserQuotaSummary`：`groups[]` 每组（如 Gemini Models）带若干窗口
      * bucket（周/5 小时），`remainingFraction` 0-1（1 = 未用），`resetTime` ISO 时间。
+     *
+     * 两个易踩的上游行为：
+     * - 周配额耗尽时 Google 会把对应 5h 桶标 `disabled: true` 且 `remainingFraction: 1`，
+     *   照原样展示会多出一条「0% 使用」的假进度条，故直接跳过；
+     * - Gemini 4 Argon 等新模型有**自己的**额外配额池（只有周窗口），它不是账号总额度，
+     *   耗尽时不能把账号判成没额度，故单独标 [QuotaBucket.modelOnly]。
      */
     private fun parseQuotaBuckets(body: String): List<QuotaBucket> {
         val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return emptyList()
@@ -801,26 +823,41 @@ class AntigravityProvider(
         for (groupElement in groups.asJsonArray) {
             val group = groupElement.takeIf { it.isJsonObject }?.asJsonObject ?: continue
             val groupName = group.get("displayName")?.asString?.takeIf { it.isNotEmpty() } ?: "Models"
+            val groupIsModelOnly = modelScopeOf(groupName) != null
             val buckets = group.get("buckets")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
             for (bucketElement in buckets.asJsonArray) {
                 val bucket = bucketElement.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                if (bucket.get("disabled")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) continue
                 val fraction = runCatching { bucket.get("remainingFraction")?.asString?.trim()?.toDouble() }
                     .getOrNull() ?: continue
+                val bucketId = bucket.get("bucketId")?.asString.orEmpty()
                 val windowName = bucket.get("displayName")?.asString?.takeIf { it.isNotEmpty() }
-                    ?: bucket.get("bucketId")?.asString?.takeIf { it.isNotEmpty() }
+                    ?: bucketId.takeIf { it.isNotEmpty() }
                     ?: "Limit"
                 val bounded = fraction.coerceIn(0.0, 1.0)
+                // 组名没写明模型时，再看 bucketId（如 gemini-argon-wtu-weekly / gemini-4-argon）
+                val scope = modelScopeOf(groupName) ?: modelScopeOf(bucketId)
                 result += QuotaBucket(
-                    groupName = groupName,
+                    // 模型专属池用统一展示名，避免同一模型因 bucketId 拼写差异被拆成两行
+                    groupName = if (scope != null) "Gemini 4 Argon" else groupName,
                     windowName = windowName,
                     remainingPct = bounded * 100.0,
                     usedPct = (1.0 - bounded) * 100.0,
                     resetAtSeconds = parseIsoSeconds(bucket.get("resetTime")?.asString),
+                    modelOnly = scope != null,
+                    scopeLabel = scope?.let { "仅 $it" }.orEmpty(),
                 )
             }
         }
         return result
     }
+
+    /** 识别「模型专属配额池」并返回其模型名；共享池（Gemini Models / Claude and GPT models）返回 null。
+     *
+     * 只认明确带模型名的池子：Argon 是目前唯一有独立配额的模型，且只有周窗口。
+     */
+    private fun modelScopeOf(text: String): String? =
+        if (text.contains("argon", ignoreCase = true)) "gemini-4-argon" else null
 
     private fun parseIsoSeconds(value: String?): Long {
         if (value.isNullOrBlank()) return 0L
