@@ -150,7 +150,7 @@ class ApkDownloaderTest {
             url = url,
             source = MirrorSource("direct", "直连", ""),
             targetPath = target.path,
-            onProgress = { done, _, _ -> synchronized(progress) { progress += done } },
+            onProgress = { done, _, _, _ -> synchronized(progress) { progress += done } },
         )
         assertEquals(payload.size.toLong(), result.bytes)
         assertEquals(4, result.threads)

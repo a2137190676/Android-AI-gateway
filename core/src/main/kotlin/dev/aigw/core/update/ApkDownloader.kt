@@ -32,8 +32,8 @@ data class DownloadResult(
     val bytesPerSecond: Long get() = if (elapsedMs <= 0) 0L else bytes * 1_000 / elapsedMs
 }
 
-/** 下载进度回调（[total] 未知时为 0）。在下载线程上调用，界面侧自行切主线程。 */
-typealias ProgressCallback = (downloaded: Long, total: Long, bytesPerSecond: Long) -> Unit
+/** 下载进度回调（[total] 未知时为 0；[threads] 为实际并发段数）。在下载线程上调用。 */
+typealias ProgressCallback = (downloaded: Long, total: Long, bytesPerSecond: Long, threads: Int) -> Unit
 
 /**
  * GitHub 下载线路测速。
@@ -164,7 +164,8 @@ class ApkDownloader(
         if (total > 0) {
             java.io.RandomAccessFile(targetPath, "rw").use { it.setLength(total) }
         }
-        val progress = DownloadProgress(total, startedAt, onProgress)
+        val progress = DownloadProgress(total, startedAt, onProgress, segments.size)
+        progress.emit(force = true)
         val pool = Executors.newFixedThreadPool(segments.size.coerceAtLeast(1)) { r ->
             Thread(r, "apk-segment").apply { isDaemon = true }
         }
@@ -345,6 +346,7 @@ class ApkDownloader(
         val total: Long,
         val startedAt: Long,
         val callback: ProgressCallback?,
+        val threads: Int,
     ) {
         private val done = java.util.concurrent.atomic.AtomicLong(0)
         private val lastEmit = java.util.concurrent.atomic.AtomicLong(0)
@@ -368,7 +370,7 @@ class ApkDownloader(
             val speed = if (delta <= 0) 0L else delta * 1_000 / elapsed
             lastBytes.set(current)
             lastAt.set(now)
-            callback(current, total, speed)
+            callback(current, total, speed, threads)
         }
     }
 

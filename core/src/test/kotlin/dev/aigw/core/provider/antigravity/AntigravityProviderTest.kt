@@ -35,16 +35,10 @@ class AntigravityProviderTest {
     private fun withUpstream(
         routes: Map<String, Pair<Int, String>>,
         block: (base: String, received: Received) -> Unit,
-    ) = withUpstreamByAgent({ path, _ -> routes[path] ?: (200 to "{}") }, block)
+    ) = withUpstream({ path, _, _ -> routes[path] ?: (200 to "{}") }, block)
 
-    /** 假上游（可按 UA 回不同响应）：用于验证配额端点的 UA 自适应。 */
-    private fun withUpstreamByAgent(
-        respond: (path: String, userAgent: String) -> Pair<Int, String>,
-        block: (base: String, received: Received) -> Unit,
-    ) = withUpstreamFull({ path, ua, _ -> respond(path, ua) }, block)
-
-    /** 假上游（可同时按请求体应答）：验证「带 project 被拒 → 空体重试」用。 */
-    private fun withUpstreamFull(
+    /** 假上游（可同时按 UA / 请求体应答）：验证 UA 形态与「带 project 被拒 → 空体重试」用。 */
+    private fun withUpstream(
         respond: (path: String, userAgent: String, body: String) -> Pair<Int, String>,
         block: (base: String, received: Received) -> Unit,
     ) {
@@ -453,8 +447,8 @@ class AntigravityProviderTest {
     }
 
     @Test
-    fun `loadCodeAssist 的 metadata 只带 ideType`() = withUpstreamByAgent(
-        { path, _ ->
+    fun `loadCodeAssist 的 metadata 只带 ideType`() = withUpstream(
+        { path, _, _ ->
             if (path == CREDITS_PATH) {
                 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
             } else {
@@ -521,7 +515,7 @@ class AntigravityProviderTest {
     }
 
     @Test
-    fun `带 project 被 403 时去掉 project 重试并成功`() = withUpstreamFull(
+    fun `带 project 被 403 时去掉 project 重试并成功`() = withUpstream(
         { path, _, requestBody ->
             when {
                 path == CREDITS_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""

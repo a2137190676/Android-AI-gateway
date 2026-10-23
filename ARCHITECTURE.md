@@ -204,11 +204,12 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
   - **Gemini 4 Argon 有独立的周日额度**（bucketId 形如 `gemini-argon-wtu-weekly` / `gemini-4-argon`，仅周窗口）。它是**模型级**配额：耗尽只影响 argon 模型，绝不能拿来当账号级余额，否则选号会把还有额度的账号判死（同「错误作用域」铁律）。
   - 周配额耗尽时，Google 会把对应 5h 桶标 `disabled: true` 且 `remainingFraction: 1`；这类桶必须跳过，否则界面会出现一条「0% 使用」的假进度条。
   - 账号级余额 = 共享池最紧窗口；模型专属池单独以 `QuotaPack.scope`（「仅 gemini-4-argon」）展示，并写进 `creditInfo.detail` 的「独立配额」段。
-  - **配额/订阅类端点必须用 CLI UA**（`antigravity/cli/<ver> linux/amd64`）而不是对话 UA（`antigravity/hub/<ver> darwin/arm64`）：Google 按 UA 分流，hub UA 打 `retrieveUserQuotaSummary`/`loadCodeAssist` 会被 403 拒掉，看起来就像「授权失效」。对话/流式生成仍用 hub UA。
-  - **配额端点 UA 必须是完整 hub 形态**：`antigravity/hub/<ver> (aidev_client; os_type=darwin; arch=arm64; cl=998881661)`（依据 Antigravity-Manager `constants.rs`，MIT）。缺 `(aidev_client; ...)` 段的裸 UA（`antigravity/hub/2.23.0 darwin/arm64`）会被判 **#3501「You do not have a valid license of this product」** 回 403，与订阅真假无关（Pro 账号一样中招）。
-  - **`loadCodeAssist` 例外**：它用裸 `antigravity/hub/<ver> darwin/arm64`，且走 `daily-` 域名（参考 9router 的 `ANTIGRAVITY_IDE_USER_AGENT` + `ANTIGRAVITY_IDE_BASE_URL`），不要附加 `X-Goog-Api-Client` / `Client-Metadata`——9router commit 35f86e5 记录「Google 对这两个头做指纹校验，与真实 IDE 不符时静默不给 `cloudaicompanionProject`」。
-  - metadata 按官方 gemini-cli 的 `LoadCodeAssistRequest` 写全 `ideType/platform/pluginType`；`ideType` 在 `ANTIGRAVITY` 与 `IDE_UNSPECIFIED` 间探测并缓存成功者（登录与额度查询共用同一身份）。
-  - **403 先剥 project 再换域名**：带 `project` 的配额请求会被当作云项目授权校验，project 不属该账号授权即 #3501。实测三个接口都忽略 project，故带 project 被拒时改 `{}` 重试，再不行换 sandbox → prod 域名（同 Antigravity-Manager 的 QUOTA_SUMMARY_ENDPOINTS 顺序）。只有 401 才报登录失效。
+  - **额度/订阅查询完全对接 CLIProxyAPI**（`antigravity_executor_credits.go` / `antigravity_executor_request.go`，MIT）：
+    - `loadCodeAssist` 与 `retrieveUserQuotaSummary` 一律用裸 hub UA `antigravity/hub/<ver> darwin/arm64`，base 固定 `daily-cloudcode-pa`；
+    - `loadCodeAssist` 的 metadata **只带 `ideType=ANTIGRAVITY`**（不带 platform/pluginType）；
+    - 只发 `Authorization` / `Content-Type` / `User-Agent` 三个头，不发 `X-Goog-Api-Client` / `Client-Metadata`；
+    - 失败回退：剥 `project` 重试 → sandbox → prod；只有 401 才报登录失效，403 报真实状态码。
+    > 历史弯路（不要再重复）：曾试过 `antigravity/cli/<ver>`、带 `(aidev_client; cl=..)` 段的完整 hub 形态、`ideType` 在 `ANTIGRAVITY`/`IDE_UNSPECIFIED` 间探测、给 metadata 补齐 `platform`/`pluginType`——这些都没能解决 #3501，且客户端形态已被官方论坛证伪（同一账号官方 IDE 正常、直连 API 仍 403）。
   - `resolveModel` 先查「模型目录里真有的 id」再做子串路由：`gemini-4-argon` 含 `pro`，否则会被改写成 `gemini-pro-agent`。
   - **额度查询路径的 403 不等于登录失效**：403 常见于权限/订阅分流（free-tier 访问部分 RPC 返回 `SUBSCRIPTION_REQUIRED`），此时应降级继续查配额并把真实状态码写进 detail；只有 401 才是重新登录。对话路径的 `classify` 仍保持 401/403 → `SESSION_DEAD`（见第 5 节铁律，勿改）。
 

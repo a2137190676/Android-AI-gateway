@@ -1480,7 +1480,7 @@ class AppViewModel(
                         source = source,
                         targetPath = target.path,
                         isCancelled = { cancelRequested },
-                        onProgress = { done, total, speed ->
+                        onProgress = { done, total, speed, threads ->
                             val totalBytes = if (total > 0) total else info.apkSize
                             _state.value = _state.value.copy(
                                 updateDownload = UpdateDownload.Downloading(
@@ -1488,7 +1488,7 @@ class AppViewModel(
                                     total = totalBytes,
                                     bytesPerSecond = speed,
                                     source = source.label,
-                                    threads = ApkDownloader.THREADS,
+                                    threads = threads,
                                 ),
                             )
                         },

@@ -298,12 +298,11 @@ class AntigravityProvider(
         }
         val tierLabel = assist?.tierLabel ?: "订阅未知"
         val packs = mutableListOf<QuotaPack>()
-        // 模型组配额：所有账号都有（会员的订阅配额 / 免费版的基础配额）
-        try {
-            val (status, body) = loadQuotaSummary(credential.accessToken, credential.projectId)
-            if (status in 200..299) packs += quotaPacks(body, tierLabel)
-        } catch (_: Exception) {
-        }
+        // 模型组配额是 best-effort：这层失败不能拖垮整个额度包列表（积分仍要展示）
+        runCatching { loadQuotaSummary(credential.accessToken, credential.projectId) }
+            .getOrNull()
+            ?.takeIf { it.first in 200..299 }
+            ?.let { (_, body) -> packs += quotaPacks(body, tierLabel) }
         // Google One 积分：仅订阅用户有
         if (assist?.credits != null) {
             packs += QuotaPack(name = "Google One AI 积分", group = tierLabel, remain = assist.credits)
