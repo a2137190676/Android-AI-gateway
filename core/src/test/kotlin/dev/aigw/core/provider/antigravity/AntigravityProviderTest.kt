@@ -41,16 +41,23 @@ class AntigravityProviderTest {
     private fun withUpstreamByAgent(
         respond: (path: String, userAgent: String) -> Pair<Int, String>,
         block: (base: String, received: Received) -> Unit,
+    ) = withUpstreamFull({ path, ua, _ -> respond(path, ua) }, block)
+
+    /** 假上游（可同时按请求体应答）：验证「带 project 被拒 → 空体重试」用。 */
+    private fun withUpstreamFull(
+        respond: (path: String, userAgent: String, body: String) -> Pair<Int, String>,
+        block: (base: String, received: Received) -> Unit,
     ) {
         val received = Received()
         val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
         server.createContext("/") { exchange ->
             val path = exchange.requestURI.path
             val ua = exchange.requestHeaders.getFirst("User-Agent").orEmpty()
+            val requestBody = exchange.requestBody.readBytes().toString(Charsets.UTF_8)
             received.paths += path
-            received.bodies += exchange.requestBody.readBytes().toString(Charsets.UTF_8)
+            received.bodies += requestBody
             received.userAgents += ua
-            val (status, body) = respond(path, ua)
+            val (status, body) = respond(path, ua, requestBody)
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "application/json")
             exchange.sendResponseHeaders(status, if (bytes.isEmpty()) -1 else bytes.size.toLong())
@@ -427,10 +434,10 @@ class AntigravityProviderTest {
         assertTrue(AntigravityProvider(apiBase = base, quotaBase = base).creditPacks(account()).isEmpty())
     }
 
-    // ------------------------------------------------------- 配额端点的 UA / 错误口径
+    // ------------------------------------------------------- 额度查询对齐 CLIProxyAPI
 
     @Test
-    fun `配额端点必须用 agy CLI 的 UA 而不是对话 UA`() = withUpstream(
+    fun `额度查询用裸 hub UA，不带任何指纹头`() = withUpstream(
         mapOf(
             CREDITS_PATH to (200 to """{"currentTier":{"id":"free-tier"}}"""),
             QUOTA_PATH to (200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.8"))),
@@ -439,27 +446,40 @@ class AntigravityProviderTest {
         AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
         val index = received.paths.indexOfFirst { it == QUOTA_PATH }
         assertTrue(index >= 0, "应请求配额端点：${received.paths}")
-        // 上游按 UA 识别客户端：必须是带 (aidev_client; ...) 段的官方 hub 形态
+        // CLIProxyAPI 只用 `antigravity/hub/<ver> <os>/<arch>`，不带 (aidev_client; ...) 段
         val ua = received.userAgents[index]
-        assertTrue(ua.contains("antidev_client") || ua.contains("aidev_client"), "配额端点 UA 缺 aidev_client 段：$ua")
-        assertTrue(ua.startsWith("antigravity/hub/"), "配额端点应使用 hub UA：$ua")
-        assertTrue(ua.contains("cl="), "hub UA 应带客户端变更集号：$ua")
+        assertTrue(ua.startsWith("antigravity/hub/"), "应使用 hub UA：$ua")
+        assertTrue(!ua.contains("aidev_client"), "不应附加 aidev_client 指纹段：$ua")
+    }
+
+    @Test
+    fun `loadCodeAssist 的 metadata 只带 ideType`() = withUpstreamByAgent(
+        { path, _ ->
+            if (path == CREDITS_PATH) {
+                200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
+            } else {
+                200 to "{}"
+            }
+        },
+    ) { base, received ->
+        AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
+        val payload = received.bodies[received.paths.indexOfFirst { it == CREDITS_PATH }]
+        // CLIProxyAPI 只发 metadata.ideType；多余字段会被上游当作不同客户端
+        assertTrue(payload.contains("ANTIGRAVITY"), payload)
+        assertTrue(!payload.contains("pluginType"), "不应带 pluginType：$payload")
+        assertTrue(!payload.contains("platform"), "不应带 platform：$payload")
     }
 
     @Test
     fun `配额端点 403 时不能报登录失效`() = withUpstream(
         mapOf(
             CREDITS_PATH to (200 to """{"currentTier":{"id":"free-tier"}}"""),
-            // 实测：UA 不对时上游回 403（而不是 401），若当成登录失效会误导用户重新登录
             QUOTA_PATH to (403 to """{"error":{"message":"The caller does not have permission"}}"""),
         ),
     ) { base, _ ->
         val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
         assertTrue(!info.known)
-        assertTrue(
-            !info.detail.contains("登录状态已失效"),
-            "403 不应被当成登录失效（会误导用户反复重新登录）：${info.detail}",
-        )
+        assertTrue(!info.detail.contains("登录状态已失效"), "403 不应当成登录失效：${info.detail}")
         assertTrue(info.detail.contains("403"), "detail 应带真实状态码：${info.detail}")
     }
 
@@ -478,7 +498,6 @@ class AntigravityProviderTest {
     @Test
     fun `loadCodeAssist 非 401 失败时仍展示配额而不是报授权失效`() = withUpstream(
         mapOf(
-            // 免费层访问部分 RPC 会拿到 403 SUBSCRIPTION_REQUIRED；此时配额数据仍可取
             CREDITS_PATH to (403 to """{"error":{"message":"SUBSCRIPTION_REQUIRED"}}"""),
             QUOTA_PATH to (200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.7"))),
         ),
@@ -502,89 +521,24 @@ class AntigravityProviderTest {
     }
 
     @Test
-    fun `配额端点被拒后会换下一个 UA 形态重试`() = withUpstreamByAgent(
-        { path, ua ->
+    fun `带 project 被 403 时去掉 project 重试并成功`() = withUpstreamFull(
+        { path, _, requestBody ->
             when {
-                path != QUOTA_PATH -> 200 to """{"currentTier":{"id":"free-tier"}}"""
-                // 只放行带 aidev_client 段的形态，第二个候选（不带段）会被拒
-                ua.contains("aidev_client") -> 200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.6"))
-                else -> 403 to """{"error":{"message":"unsupported client"}}"""
+                path == CREDITS_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
+                // 只有空请求体被放行：模拟 #3501 的 project 授权校验失败
+                requestBody.contains("project") ->
+                    403 to """{"error":{"code":403,"message":"You do not have a valid license of this product"}}"""
+                else -> 200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.75"))
             }
         },
-    ) { base, _ ->
+    ) { base, received ->
         val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
-        assertEquals(60L, info.balance, "换 UA 后应拿到配额：${info.detail}")
+        assertEquals(75L, info.balance, "剥掉 project 后应拿到配额：${info.detail}")
         assertTrue(info.known)
-    }
-
-    @Test
-    fun `配额端点全部 UA 都被拒时报真实状态码而不是登录失效`() = withUpstreamByAgent(
-        { path, _ ->
-            if (path != QUOTA_PATH) {
-                200 to """{"currentTier":{"id":"free-tier"}}"""
-            } else {
-                403 to """{"error":{"message":"PERMISSION_DENIED"}}"""
-            }
-        },
-    ) { base, received ->
-        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
-        assertTrue(!info.known)
-        assertTrue(!info.detail.contains("登录状态已失效"), info.detail)
-        assertTrue(info.detail.contains("403"), "应显示真实状态码：${info.detail}")
-        assertTrue(info.detail.contains("客户端身份"), "403 应提示是身份/订阅校验：${info.detail}")
-        assertTrue(info.detail.contains("UA "), "失败详情应带上实际 UA 便于定位：${info.detail}")
-        // 多个 UA 形态都要试过，否则可能只是候选不够
-        assertTrue(received.paths.count { it == QUOTA_PATH } >= 2, "应尝试多个 UA 形态：${received.paths}")
-    }
-
-    @Test
-    fun `带 project 被 403 时去掉 project 重试并成功`() = withUpstreamByAgent(
-        { path, ua ->
-            when {
-                path != QUOTA_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
-                // 模拟 #3501：只有完整 hub UA 被放行
-                ua.startsWith("antigravity/hub/") && ua.contains("aidev_client") ->
-                    200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.75"))
-                else -> 403 to """{"error":{"code":403,"message":"You do not have a valid license of this product"}}"""
-            }
-        },
-    ) { base, received ->
-        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
-        assertEquals(75L, info.balance, "应拿到配额：${info.detail}")
-        assertTrue(info.known)
-        assertTrue(!info.detail.contains("403"), info.detail)
-        assertTrue(received.bodies.any { it.contains("proj-1") }, "应带过 project 请求：${received.bodies}")
-    }
-
-    @Test
-    fun `额度查询的 loadCodeAssist 请求体带全 metadata 字段`() = withUpstreamByAgent(
-        { path, _ ->
-            when (path) {
-                CREDITS_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
-                else -> 200 to "{}"
-            }
-        },
-    ) { base, received ->
-        AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
-        val payload = received.bodies[received.paths.indexOfFirst { it == CREDITS_PATH }]
-        // 官方 gemini-cli 的 LoadCodeAssistRequest 要求 metadata 同时带 ideType/platform/pluginType
-        assertTrue(payload.contains("pluginType"), "metadata 缺 pluginType：$payload")
-        assertTrue(payload.contains("PLATFORM_UNSPECIFIED"), "metadata 缺 platform：$payload")
-        assertTrue(payload.contains("ANTIGRAVITY"), "ideType 应为 ANTIGRAVITY：$payload")
-    }
-
-    @Test
-    fun `ANTIGRAVITY 身份被拒时改用另一个客户端身份重试`() = withUpstreamByAgent(
-        { path, _ ->
-            when (path) {
-                CREDITS_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
-                else -> 200 to "{}"
-            }
-        },
-    ) { base, received ->
-        // 主身份成功就不会多重试一轮
-        AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
-        assertEquals(1, received.paths.count { it == CREDITS_PATH }, "主身份成功不应重试：${received.paths}")
+        // 确实走了「带 project 失败 → 空体重试」
+        val quotaBodies = received.paths.indices.filter { received.paths[it] == QUOTA_PATH }.map { received.bodies[it] }
+        assertTrue(quotaBodies.any { it.contains("proj-1") }, "应先带 project：$quotaBodies")
+        assertTrue(quotaBodies.any { it == "{}" }, "应再用空体重试：$quotaBodies")
     }
 
     @Test

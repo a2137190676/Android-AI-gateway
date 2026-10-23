@@ -29,21 +29,6 @@ internal object AntigravityVersion {
     private const val TTL_MILLIS = 6L * 60 * 60 * 1000
     private const val TIMEOUT_MS = 10_000
 
-    /**
-     * 官方 hub 客户端变更集号（CL）：UA 里带上它才与正版客户端一致。
-     * 取自 Antigravity-Manager constants.rs 的 OFFICIAL_HUB_CL。
-     */
-    private const val HUB_CL = "998881661"
-
-    /**
-     * 官方 hub 出站 UA：`antigravity/hub/<ver> (aidev_client; os_type=..; arch=..; cl=..)`。
-     *
-     * 配额端点（retrieveUserQuotaSummary / loadCodeAssist）对它做了客户端识别：
-     * 缺 `(aidev_client; ...)` 这一段的裸形态会被 403 拒掉（返回 #3501 无有效 license）。
-     */
-    fun hubUserAgent(nowMillis: Long = System.currentTimeMillis()): String =
-        "antigravity/hub/${current(nowMillis)} (aidev_client; os_type=darwin; arch=arm64; cl=$HUB_CL)"
-
     private val cachedHub = AtomicReference<Pair<String, Long>>(FALLBACK_VERSION to 0L)
 
     /** 当前生效的版本号（缓存过期才回源）。 */

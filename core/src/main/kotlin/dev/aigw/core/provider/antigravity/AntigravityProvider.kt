@@ -551,50 +551,25 @@ class AntigravityProvider(
     private fun userAgent(): String = "antigravity/hub/${clientVersion()} darwin/arm64"
 
     /**
-     * 配额/订阅类端点的 UA 候选（顺序即优先级）。
+     * 额度/订阅查询（完全对接 CLIProxyAPI 的做法）。
      *
-     * 依据 Antigravity-Manager 的 `constants.rs`（MIT）：Google 对这类端点做客户端识别，
-     * 要求 UA 含 `antigravity` 且形态是官方 hub 出站串
-     * `antigravity/hub/<ver> (aidev_client; os_type=..; arch=..; cl=..)`。
-     * 缺 `(aidev_client; ...)` 段的裸形态会被判「无有效 license」的 403（#3501）。
-     * 依次试，哪个被接受就缓存；全部失败则把最后一次的真实状态码交给上层展示。
+     * 对齐 `internal/runtime/executor/antigravity_executor_credits.go` 与
+     * `antigravity_executor_request.go`（MIT, router-for-me）：
+     * - 只发 Authorization / Content-Type / User-Agent 三个头，不发任何指纹头；
+     * - UA 用裸 hub 形态 `antigravity/hub/<ver> darwin/arm64`；
+     * - base 固定 `daily-cloudcode-pa`；
+     * - loadCodeAssist 的 metadata **只带 ideType=ANTIGRAVITY**（不带 platform/pluginType）。
      */
-    private fun quotaUserAgentCandidates(): List<String> = listOf(
-        AntigravityVersion.hubUserAgent(),
-        userAgent(),
-    ).distinct()
-
-    /** 已被上游接受的配额 UA（按配额端点分别记住，避免每次刷新都重试一遍）。 */
-    @Volatile
-    private var acceptedQuotaAgent: String? = null
-
-    /** 最近一次额度请求实际用过的 UA / 身份，失败时写进 detail 方便定位。 */
-    @Volatile
-    private var lastQuotaAttempt: String = ""
-
-    /**
-     * 带 UA 自适应地 POST 配额类端点。
-     *
-     * 已缓存的 UA 优先；遇到 401 不换 UA（那是凭证问题），只对 403/400 换下一个候选重试。
-     */
-    private fun postQuotaEndpoint(url: String, accessToken: String, body: String): Pair<Int, String> {
-        val cached = acceptedQuotaAgent
-        val candidates = (listOfNotNull(cached) + quotaUserAgentCandidates()).distinct()
-        var last: Pair<Int, String> = 0 to ""
-        for (agent in candidates) {
-            lastQuotaAttempt = agent
-            val result = postJson(url, accessToken, body, userAgent = agent)
-            val status = result.first
-            if (status in 200..299) {
-                if (acceptedQuotaAgent != agent) acceptedQuotaAgent = agent
-                return result
-            }
-            last = result
-            // 401 = 凭证问题，换 UA 也没用；其余（403/400）才继续试下一个形态
-            if (status == 401) return result
-            if (status !in listOf(400, 403)) return result
-        }
-        return last
+    private fun loadPaidCredits(accessToken: String): Pair<Int, String> {
+        val payload = JsonObject().apply {
+            add("metadata", JsonObject().apply { addProperty("ideType", "ANTIGRAVITY") })
+        }.toString()
+        return postJson(
+            "$quotaBase/$API_VERSION:loadCodeAssist",
+            accessToken,
+            payload,
+            userAgent = userAgent(),
+        )
     }
 
     private fun open(url: String, accessToken: String, body: String?): HttpURLConnection {
@@ -721,92 +696,37 @@ class AntigravityProvider(
         runCatching { JsonParser.parseString(body).asJsonObject.get("model")?.asString.orEmpty() }
             .getOrDefault("")
 
-    /**
-     * `loadCodeAssist` 订阅/积分查询。
-     *
-     * 必须与登录时取 project 的请求保持**同一个客户端身份**（同 ideType），否则上游把它当成
-     * 另一个未授权客户端，回 #3501「You do not have a valid license」。
-     * metadata 字段按官方 gemini-cli 的 LoadCodeAssistRequest 写全（ideType/platform/pluginType），
-     * 只给 ideType 时部分账号会被判无 license。
-     */
-    private fun loadPaidCredits(accessToken: String): Pair<Int, String> {
-        // 参考实现（9router / Antigravity-Manager）走 daily- 域名；之前用 prod 域名（apiBase）
-        // 在部分账号上会直接回 #3501。两处都试，成功哪个用哪个
-        val urls = listOf(
-            "$quotaBase/$API_VERSION:loadCodeAssist",
-            "$apiBase/$API_VERSION:loadCodeAssist",
-        ).distinct()
-        // 已探测成功的身份优先，否则按常见顺序试：官方桌面端 → 通用 IDE
-        val identities = (listOfNotNull(acceptedIdeType) + listOf("ANTIGRAVITY", "IDE_UNSPECIFIED")).distinct()
-        var last: Pair<Int, String> = 0 to ""
-        for (url in urls) {
-            for (ideType in identities) {
-                // loadCodeAssist 用裸 hub UA（不带 aidev_client 段）：参考实现对它只要求
-                // 与真实 IDE 一致的基础 UA，多余指纹反而会被判非法客户端
-                val result = postJson(url, accessToken, loadCodeAssistPayload(ideType), userAgent = userAgent())
-                lastQuotaAttempt = userAgent()
-                if (result.first in 200..299) {
-                    if (acceptedIdeType != ideType) acceptedIdeType = ideType
-                    return result
-                }
-                last = result
-                // 401 是凭证问题，换身份/域名都无意义
-                if (result.first == 401) return result
-            }
-        }
-        return last
-    }
-
-    /** 已被上游接受的 loadCodeAssist 客户端身份（避免每次刷新都多重试一轮）。 */
-    @Volatile
-    private var acceptedIdeType: String? = null
-
-    private fun loadCodeAssistPayload(ideType: String): String = JsonObject().apply {
-        add(
-            "metadata",
-            JsonObject().apply {
-                addProperty("ideType", ideType)
-                addProperty("platform", "PLATFORM_UNSPECIFIED")
-                addProperty("pluginType", "GEMINI")
-            },
-        )
-    }.toString()
-
-    /** 登录与额度查询共用的 loadCodeAssist 客户端身份。 */
+    /** 登录与额度查询共用的 loadCodeAssist 客户端身份（CLIProxyAPI 同款：只带 ideType）。 */
     private fun loadCodeAssistMetadata(): JsonObject = JsonObject().apply {
         addProperty("ideType", "ANTIGRAVITY")
-        addProperty("platform", "PLATFORM_UNSPECIFIED")
-        addProperty("pluginType", "GEMINI")
     }
 
     /**
-     * 模型组配额（桌面 App 展示的「Weekly Limit / Five Hour Limit」）。必须走 daily- 前缀域名：
-     * 非前缀域名对 Gemini 组永远返回 remainingFraction=1（错误数据，见 agy 语言服务器日志）。
+     * 模型组配额（桌面 App 展示的「Weekly Limit / Five Hour Limit」）。
      *
-     * 带 `project` 的请求会被上游用作「云项目授权」校验；本地登录拿到的 project id 若不属于
-     * 该账号的有效授权，就会回 #3501（You do not have a valid license）。实测三个接口都忽略
-     * project 字段，所以带了被拒时换成空请求体重试（同 Antigravity-Manager 的 fallback）。
+     * 对接 CLIProxyAPI：base 固定 `daily-cloudcode-pa`，请求体带 `project`（拿不到就空体），
+     * 失败时按 剥 project → sandbox → prod 的顺序回退。
      */
     private fun loadQuotaSummary(accessToken: String, projectId: String): Pair<Int, String> {
         // 只有用默认域名时才回退到 sandbox/prod；显式传了 base（单测的假上游）就只打它
         val bases = if (quotaBase == QUOTA_BASE) listOf(quotaBase) + QUOTA_FALLBACK_BASES else listOf(quotaBase)
         var last: Pair<Int, String> = 0 to ""
+        // 两种请求体都试：带 project 的完整形态，与空体（#3501 常见于 project 授权校验失败）
+        val payloads = LinkedHashSet<String>().apply {
+            if (projectId.isNotEmpty()) {
+                add(JsonObject().apply { addProperty("project", projectId) }.toString())
+            }
+            add("{}")
+        }
         for (base in bases) {
-            val result = queryQuotaOn(base, accessToken, projectId)
-            if (result.first == 401 || result.first in 200..299) return result
-            last = result
+            for (payload in payloads) {
+                val url = "$base/$API_VERSION:retrieveUserQuotaSummary"
+                val result = postJson(url, accessToken, payload, userAgent = userAgent())
+                if (result.first == 401 || result.first in 200..299) return result
+                last = result
+            }
         }
         return last
-    }
-
-    private fun queryQuotaOn(base: String, accessToken: String, projectId: String): Pair<Int, String> {
-        val url = "$base/$API_VERSION:retrieveUserQuotaSummary"
-        if (projectId.isEmpty()) return postQuotaEndpoint(url, accessToken, "{}")
-        val payload = JsonObject().apply { addProperty("project", projectId) }.toString()
-        val result = postQuotaEndpoint(url, accessToken, payload)
-        if (result.first == 401 || result.first in 200..299) return result
-        val retry = postQuotaEndpoint(url, accessToken, "{}")
-        return if (retry.first in 200..299) retry else result
     }
 
     /** 无积分可显示时，账号卡片余额取最紧窗口的剩余百分比，detail 标注订阅层级。 */
@@ -820,13 +740,12 @@ class AntigravityProvider(
             return CreditInfo(0, known = false, detail = "登录状态已失效，需要重新登录")
         }
         if (status !in 200..299) {
-            // 403 在配额端点是「权限/订阅限制」（如 free-tier 的 SUBSCRIPTION_REQUIRED），不是登录问题
-            val hint = if (status == 403) "（非登录失效，是客户端身份/订阅校验）" else ""
+            // 403 在额度端点是权限/订阅校验失败（#3501），不是凭证失效
+            val hint = if (status == 403) "（非登录失效，是上游对客户端/账号的授权校验）" else ""
             return CreditInfo(
                 0,
                 known = false,
-                detail = "$prefix$tierLabel · 查询配额失败（HTTP $status）$hint：${body.take(200)}" +
-                    "｜身份 ${acceptedIdeType ?: "未定"} · UA $lastQuotaAttempt",
+                detail = "$prefix$tierLabel · 查询配额失败（HTTP $status）$hint：${body.take(300)}",
             )
         }
         val buckets = parseQuotaBuckets(body)

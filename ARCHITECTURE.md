@@ -88,7 +88,7 @@
 | `provider/Provider.kt` | Provider 接口 + AuthKind 枚举 | 抽象边界，勿随意扩接口 |
 | `provider/ChatCall.kt` | 上游响应封装（stream/aggregated/failure 三态） | |
 | `provider/StreamSupport.kt` | `LineTransformStream`（逐行翻译）、`OpenAiSseAggregator`（SSE聚合/completionAsSse/isEmptyCompletion） | SSE 帧必须以 `\n\n` 结尾 |
-| `provider/antigravity/` | Google Antigravity（Gemini 协议）| **凭证策略见下文第 5 节，严禁回退** |
+| `provider/antigravity/` | Google Antigravity（Gemini 协议）| **凭证策略见下文第 5 节，严禁回退**；额度查询完全对接 CLIProxyAPI |
 | `provider/codebuddy/` | 腾讯 WorkBuddy（国内 copilot.tencent.com / 国际 workbuddy.ai）| 上游拒绝非流式，必须 stream:true |
 | `provider/trae/` | 字节 Trae SOLO 通道（最重的协议转换）| |
 | `provider/loomy/` | 讯飞 Loomy（HTTP 200 + 业务码陷阱）| |
