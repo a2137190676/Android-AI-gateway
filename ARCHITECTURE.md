@@ -205,6 +205,8 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
   - 周配额耗尽时，Google 会把对应 5h 桶标 `disabled: true` 且 `remainingFraction: 1`；这类桶必须跳过，否则界面会出现一条「0% 使用」的假进度条。
   - 账号级余额 = 共享池最紧窗口；模型专属池单独以 `QuotaPack.scope`（「仅 gemini-4-argon」）展示，并写进 `creditInfo.detail` 的「独立配额」段。
   - **配额/订阅类端点必须用 CLI UA**（`antigravity/cli/<ver> linux/amd64`）而不是对话 UA（`antigravity/hub/<ver> darwin/arm64`）：Google 按 UA 分流，hub UA 打 `retrieveUserQuotaSummary`/`loadCodeAssist` 会被 403 拒掉，看起来就像「授权失效」。对话/流式生成仍用 hub UA。
+  - **CLI 版本序列是 1.x（hub 是 2.x）**：把 hub 版本填进 `antigravity/cli/...` 同样 403。`postQuotaEndpoint` 依次尝试 `cli/<ver> platform` → `antigravity/<ver> platform` → `antigravity/<ver>` → hub UA，哪个被接受就缓存（`acceptedQuotaAgent`）。CLI 版本来自 `AntigravityVersion.currentCli()`（官方 CLI 清单 `antigravity.google/cli/latest.yml`，兜底 1.15.8）。
+  - `resolveModel` 先查「模型目录里真有的 id」再做子串路由：`gemini-4-argon` 含 `pro`，否则会被改写成 `gemini-pro-agent`。
   - **额度查询路径的 403 不等于登录失效**：403 常见于权限/订阅分流（free-tier 访问部分 RPC 返回 `SUBSCRIPTION_REQUIRED`），此时应降级继续查配额并把真实状态码写进 detail；只有 401 才是重新登录。对话路径的 `classify` 仍保持 401/403 → `SESSION_DEAD`（见第 5 节铁律，勿改）。
 
 ### 腾讯 WorkBuddy

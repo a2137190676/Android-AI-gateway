@@ -35,15 +35,22 @@ class AntigravityProviderTest {
     private fun withUpstream(
         routes: Map<String, Pair<Int, String>>,
         block: (base: String, received: Received) -> Unit,
+    ) = withUpstreamByAgent({ path, _ -> routes[path] ?: (200 to "{}") }, block)
+
+    /** 假上游（可按 UA 回不同响应）：用于验证配额端点的 UA 自适应。 */
+    private fun withUpstreamByAgent(
+        respond: (path: String, userAgent: String) -> Pair<Int, String>,
+        block: (base: String, received: Received) -> Unit,
     ) {
         val received = Received()
         val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
         server.createContext("/") { exchange ->
             val path = exchange.requestURI.path
+            val ua = exchange.requestHeaders.getFirst("User-Agent").orEmpty()
             received.paths += path
             received.bodies += exchange.requestBody.readBytes().toString(Charsets.UTF_8)
-            received.userAgents += exchange.requestHeaders.getFirst("User-Agent").orEmpty()
-            val (status, body) = routes[path] ?: 200 to "{}"
+            received.userAgents += ua
+            val (status, body) = respond(path, ua)
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "application/json")
             exchange.sendResponseHeaders(status, if (bytes.isEmpty()) -1 else bytes.size.toLong())
@@ -491,6 +498,44 @@ class AntigravityProviderTest {
         val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
         assertTrue(!info.known)
         assertEquals("登录状态已失效，需要重新登录", info.detail)
+    }
+
+    @Test
+    fun `配额端点被拒后会换下一个 UA 形态重试`() = withUpstreamByAgent(
+        { path, ua ->
+            if (path != QUOTA_PATH) {
+                200 to """{"currentTier":{"id":"free-tier"}}"""
+            } else if (ua.startsWith("antigravity/cli/") && ua.endsWith("linux/amd64")) {
+                // 模拟上游：只有 CLI 形态的 UA 被放行，hub UA 一律 403
+                200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.6"))
+            } else {
+                403 to """{"error":{"message":"unsupported client"}}"""
+            }
+        },
+    ) { base, received ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertEquals(60L, info.balance, "换 UA 后应拿到配额：${info.detail}")
+        assertTrue(info.known)
+        assertEquals(1, received.paths.count { it == QUOTA_PATH }, "首个候选就该成功：${received.userAgents}")
+    }
+
+    @Test
+    fun `配额端点全部 UA 都被拒时报真实状态码而不是登录失效`() = withUpstreamByAgent(
+        { path, _ ->
+            if (path != QUOTA_PATH) {
+                200 to """{"currentTier":{"id":"free-tier"}}"""
+            } else {
+                403 to """{"error":{"message":"PERMISSION_DENIED"}}"""
+            }
+        },
+    ) { base, received ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertTrue(!info.known)
+        assertTrue(!info.detail.contains("登录状态已失效"), info.detail)
+        assertTrue(info.detail.contains("403"), "应显示真实状态码：${info.detail}")
+        assertTrue(info.detail.contains("付费订阅"), "403 应提示订阅限制：${info.detail}")
+        // 多个 UA 形态都要试过，否则可能只是候选不够
+        assertTrue(received.paths.count { it == QUOTA_PATH } >= 2, "应尝试多个 UA 形态：${received.paths}")
     }
 
     @Test

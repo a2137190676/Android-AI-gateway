@@ -164,6 +164,9 @@ class AntigravityProvider(
         }
         val lower = model.lowercase()
         return when {
+            // 先认「列表里真有的模型」：gemini-4-argon 含 pro 子串，若按 contains 判断会被改写成
+            // gemini-pro-agent，用户选的模型就悄悄变了
+            fetchedModels?.any { it.id.equals(model, ignoreCase = true) } == true -> model
             lower.contains("flash") -> "gemini-3.8-flash-high"
             lower.contains("pro") -> "gemini-pro-agent"
             lower.contains("claude") || lower.contains("sonnet") || lower.contains("opus") -> "claude-sonnet-4-6"
@@ -550,17 +553,58 @@ class AntigravityProvider(
         return ""
     }
 
+    /** CLI 版本（1.x 序列）：优先取官方 CLI 清单，取不到用 [AntigravityVersion.CLI_FALLBACK_VERSION]。 */
+    private fun cliClientVersion(): String = AntigravityVersion.currentCli()
+
     /** 当前生效的 User-Agent：版本随官方清单更新，不再写死。 */
     private fun userAgent(): String = "antigravity/hub/${clientVersion()} darwin/arm64"
 
     /**
-     * 配额/订阅类端点的 UA。
+     * 配额/订阅类端点的 UA 候选。
      *
-     * Google 按 UA 分流 `retrieveUserQuotaSummary`：hub（桌面 App）UA 会被 403 拒掉，
-     * 只有 agy CLI 的 UA 才被放行（同一 token、同一路径，只差 UA）。
-     * 这类 403 不带任何提示，看上去与「授权失效」一模一样，曾因此误导用户反复重新登录。
+     * Google 按 UA 分流 `retrieveUserQuotaSummary`：hub（桌面 App）UA 会被 403 拒掉。
+     * CLI 的 UA 又有自己的版本序列（1.x，与 hub 的 2.x 不通用）——把 hub 版本塞进
+     * `antigravity/cli/2.23.0` 同样会 403「不支持的客户端版本」。所以这里不写死，
+     * 依次试候选形态，哪个被接受就缓存哪个；全部失败则保留最后一次结果，让上层看到真实状态码。
      */
-    private fun quotaUserAgent(): String = "antigravity/cli/${clientVersion()} linux/amd64"
+    private fun quotaUserAgentCandidates(): List<String> {
+        val cliVersion = cliClientVersion()
+        return listOf(
+            "antigravity/cli/$cliVersion linux/amd64",
+            "antigravity/$cliVersion linux/amd64",
+            "antigravity/$cliVersion",
+            // 最后一档退回 hub UA：部分账号/端点组合下它就是可用的，不能因为前面的形态被拒就放弃
+            userAgent(),
+        ).distinct()
+    }
+
+    /** 已被上游接受的配额 UA（按配额端点分别记住，避免每次刷新都重试一遍）。 */
+    @Volatile
+    private var acceptedQuotaAgent: String? = null
+
+    /**
+     * 带 UA 自适应地 POST 配额类端点。
+     *
+     * 已缓存的 UA 优先；遇到 401 不换 UA（那是凭证问题），只对 403/400 换下一个候选重试。
+     */
+    private fun postQuotaEndpoint(url: String, accessToken: String, body: String): Pair<Int, String> {
+        val cached = acceptedQuotaAgent
+        val candidates = (listOfNotNull(cached) + quotaUserAgentCandidates()).distinct()
+        var last: Pair<Int, String> = 0 to ""
+        for (agent in candidates) {
+            val result = postJson(url, accessToken, body, userAgent = agent)
+            val status = result.first
+            if (status in 200..299) {
+                if (acceptedQuotaAgent != agent) acceptedQuotaAgent = agent
+                return result
+            }
+            last = result
+            // 401 = 凭证问题，换 UA 也没用；其余（403/400）才继续试下一个形态
+            if (status == 401) return result
+            if (status !in listOf(400, 403)) return result
+        }
+        return last
+    }
 
     private fun open(url: String, accessToken: String, body: String?): HttpURLConnection {
         val headers = buildMap {
@@ -691,7 +735,7 @@ class AntigravityProvider(
         val payload = JsonObject().apply {
             add("metadata", JsonObject().apply { addProperty("ideType", "ANTIGRAVITY") })
         }.toString()
-        return postJson("$apiBase/$API_VERSION:loadCodeAssist", accessToken, payload, userAgent = quotaUserAgent())
+        return postQuotaEndpoint("$apiBase/$API_VERSION:loadCodeAssist", accessToken, payload)
     }
 
     /**
@@ -704,7 +748,7 @@ class AntigravityProvider(
         } else {
             JsonObject().apply { addProperty("project", projectId) }.toString()
         }
-        return postJson("$quotaBase/$API_VERSION:retrieveUserQuotaSummary", accessToken, payload, userAgent = quotaUserAgent())
+        return postQuotaEndpoint("$quotaBase/$API_VERSION:retrieveUserQuotaSummary", accessToken, payload)
     }
 
     /** 无积分可显示时，账号卡片余额取最紧窗口的剩余百分比，detail 标注订阅层级。 */
