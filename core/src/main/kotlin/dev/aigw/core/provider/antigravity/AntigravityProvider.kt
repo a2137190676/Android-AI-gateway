@@ -527,13 +527,7 @@ class AntigravityProvider(
 
     /** `loadCodeAssist` 取 project id；字段名以响应为准，做宽容提取。 */
     private fun fetchProjectId(accessToken: String): String {
-        val payload = JsonObject().apply {
-            add("metadata", JsonObject().apply {
-                addProperty("ideType", "IDE_UNSPECIFIED")
-                addProperty("platform", "PLATFORM_UNSPECIFIED")
-                addProperty("pluginType", "GEMINI")
-            })
-        }.toString()
+        val payload = JsonObject().apply { add("metadata", loadCodeAssistMetadata()) }.toString()
         val (status, body) = try {
             postJson("$apiBase/$API_VERSION:loadCodeAssist", accessToken, payload)
         } catch (_: Exception) {
@@ -574,6 +568,10 @@ class AntigravityProvider(
     @Volatile
     private var acceptedQuotaAgent: String? = null
 
+    /** 最近一次额度请求实际用过的 UA / 身份，失败时写进 detail 方便定位。 */
+    @Volatile
+    private var lastQuotaAttempt: String = ""
+
     /**
      * 带 UA 自适应地 POST 配额类端点。
      *
@@ -584,6 +582,7 @@ class AntigravityProvider(
         val candidates = (listOfNotNull(cached) + quotaUserAgentCandidates()).distinct()
         var last: Pair<Int, String> = 0 to ""
         for (agent in candidates) {
+            lastQuotaAttempt = agent
             val result = postJson(url, accessToken, body, userAgent = agent)
             val status = result.first
             if (status in 200..299) {
@@ -722,12 +721,62 @@ class AntigravityProvider(
         runCatching { JsonParser.parseString(body).asJsonObject.get("model")?.asString.orEmpty() }
             .getOrDefault("")
 
-    /** CLIProxyAPI 同款请求体：只要 ideType=ANTIGRAVITY，响应里带 paidTier 的积分明细。 */
+    /**
+     * `loadCodeAssist` 订阅/积分查询。
+     *
+     * 必须与登录时取 project 的请求保持**同一个客户端身份**（同 ideType），否则上游把它当成
+     * 另一个未授权客户端，回 #3501「You do not have a valid license」。
+     * metadata 字段按官方 gemini-cli 的 LoadCodeAssistRequest 写全（ideType/platform/pluginType），
+     * 只给 ideType 时部分账号会被判无 license。
+     */
     private fun loadPaidCredits(accessToken: String): Pair<Int, String> {
-        val payload = JsonObject().apply {
-            add("metadata", JsonObject().apply { addProperty("ideType", "ANTIGRAVITY") })
-        }.toString()
-        return postQuotaEndpoint("$apiBase/$API_VERSION:loadCodeAssist", accessToken, payload)
+        // 参考实现（9router / Antigravity-Manager）走 daily- 域名；之前用 prod 域名（apiBase）
+        // 在部分账号上会直接回 #3501。两处都试，成功哪个用哪个
+        val urls = listOf(
+            "$quotaBase/$API_VERSION:loadCodeAssist",
+            "$apiBase/$API_VERSION:loadCodeAssist",
+        ).distinct()
+        // 已探测成功的身份优先，否则按常见顺序试：官方桌面端 → 通用 IDE
+        val identities = (listOfNotNull(acceptedIdeType) + listOf("ANTIGRAVITY", "IDE_UNSPECIFIED")).distinct()
+        var last: Pair<Int, String> = 0 to ""
+        for (url in urls) {
+            for (ideType in identities) {
+                // loadCodeAssist 用裸 hub UA（不带 aidev_client 段）：参考实现对它只要求
+                // 与真实 IDE 一致的基础 UA，多余指纹反而会被判非法客户端
+                val result = postJson(url, accessToken, loadCodeAssistPayload(ideType), userAgent = userAgent())
+                lastQuotaAttempt = userAgent()
+                if (result.first in 200..299) {
+                    if (acceptedIdeType != ideType) acceptedIdeType = ideType
+                    return result
+                }
+                last = result
+                // 401 是凭证问题，换身份/域名都无意义
+                if (result.first == 401) return result
+            }
+        }
+        return last
+    }
+
+    /** 已被上游接受的 loadCodeAssist 客户端身份（避免每次刷新都多重试一轮）。 */
+    @Volatile
+    private var acceptedIdeType: String? = null
+
+    private fun loadCodeAssistPayload(ideType: String): String = JsonObject().apply {
+        add(
+            "metadata",
+            JsonObject().apply {
+                addProperty("ideType", ideType)
+                addProperty("platform", "PLATFORM_UNSPECIFIED")
+                addProperty("pluginType", "GEMINI")
+            },
+        )
+    }.toString()
+
+    /** 登录与额度查询共用的 loadCodeAssist 客户端身份。 */
+    private fun loadCodeAssistMetadata(): JsonObject = JsonObject().apply {
+        addProperty("ideType", "ANTIGRAVITY")
+        addProperty("platform", "PLATFORM_UNSPECIFIED")
+        addProperty("pluginType", "GEMINI")
     }
 
     /**
@@ -772,8 +821,13 @@ class AntigravityProvider(
         }
         if (status !in 200..299) {
             // 403 在配额端点是「权限/订阅限制」（如 free-tier 的 SUBSCRIPTION_REQUIRED），不是登录问题
-            val hint = if (status == 403) "（该端点需要付费订阅，非登录失效）" else ""
-            return CreditInfo(0, known = false, detail = "$prefix$tierLabel · 查询配额失败（HTTP $status）$hint：${body.take(200)}")
+            val hint = if (status == 403) "（非登录失效，是客户端身份/订阅校验）" else ""
+            return CreditInfo(
+                0,
+                known = false,
+                detail = "$prefix$tierLabel · 查询配额失败（HTTP $status）$hint：${body.take(200)}" +
+                    "｜身份 ${acceptedIdeType ?: "未定"} · UA $lastQuotaAttempt",
+            )
         }
         val buckets = parseQuotaBuckets(body)
         if (buckets.isEmpty()) {

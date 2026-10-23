@@ -531,7 +531,8 @@ class AntigravityProviderTest {
         assertTrue(!info.known)
         assertTrue(!info.detail.contains("登录状态已失效"), info.detail)
         assertTrue(info.detail.contains("403"), "应显示真实状态码：${info.detail}")
-        assertTrue(info.detail.contains("付费订阅"), "403 应提示订阅限制：${info.detail}")
+        assertTrue(info.detail.contains("客户端身份"), "403 应提示是身份/订阅校验：${info.detail}")
+        assertTrue(info.detail.contains("UA "), "失败详情应带上实际 UA 便于定位：${info.detail}")
         // 多个 UA 形态都要试过，否则可能只是候选不够
         assertTrue(received.paths.count { it == QUOTA_PATH } >= 2, "应尝试多个 UA 形态：${received.paths}")
     }
@@ -553,6 +554,37 @@ class AntigravityProviderTest {
         assertTrue(info.known)
         assertTrue(!info.detail.contains("403"), info.detail)
         assertTrue(received.bodies.any { it.contains("proj-1") }, "应带过 project 请求：${received.bodies}")
+    }
+
+    @Test
+    fun `额度查询的 loadCodeAssist 请求体带全 metadata 字段`() = withUpstreamByAgent(
+        { path, _ ->
+            when (path) {
+                CREDITS_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
+                else -> 200 to "{}"
+            }
+        },
+    ) { base, received ->
+        AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
+        val payload = received.bodies[received.paths.indexOfFirst { it == CREDITS_PATH }]
+        // 官方 gemini-cli 的 LoadCodeAssistRequest 要求 metadata 同时带 ideType/platform/pluginType
+        assertTrue(payload.contains("pluginType"), "metadata 缺 pluginType：$payload")
+        assertTrue(payload.contains("PLATFORM_UNSPECIFIED"), "metadata 缺 platform：$payload")
+        assertTrue(payload.contains("ANTIGRAVITY"), "ideType 应为 ANTIGRAVITY：$payload")
+    }
+
+    @Test
+    fun `ANTIGRAVITY 身份被拒时改用另一个客户端身份重试`() = withUpstreamByAgent(
+        { path, _ ->
+            when (path) {
+                CREDITS_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
+                else -> 200 to "{}"
+            }
+        },
+    ) { base, received ->
+        // 主身份成功就不会多重试一轮
+        AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
+        assertEquals(1, received.paths.count { it == CREDITS_PATH }, "主身份成功不应重试：${received.paths}")
     }
 
     @Test
