@@ -205,7 +205,8 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
   - 周配额耗尽时，Google 会把对应 5h 桶标 `disabled: true` 且 `remainingFraction: 1`；这类桶必须跳过，否则界面会出现一条「0% 使用」的假进度条。
   - 账号级余额 = 共享池最紧窗口；模型专属池单独以 `QuotaPack.scope`（「仅 gemini-4-argon」）展示，并写进 `creditInfo.detail` 的「独立配额」段。
   - **配额/订阅类端点必须用 CLI UA**（`antigravity/cli/<ver> linux/amd64`）而不是对话 UA（`antigravity/hub/<ver> darwin/arm64`）：Google 按 UA 分流，hub UA 打 `retrieveUserQuotaSummary`/`loadCodeAssist` 会被 403 拒掉，看起来就像「授权失效」。对话/流式生成仍用 hub UA。
-  - **CLI 版本序列是 1.x（hub 是 2.x）**：把 hub 版本填进 `antigravity/cli/...` 同样 403。`postQuotaEndpoint` 依次尝试 `cli/<ver> platform` → `antigravity/<ver> platform` → `antigravity/<ver>` → hub UA，哪个被接受就缓存（`acceptedQuotaAgent`）。CLI 版本来自 `AntigravityVersion.currentCli()`（官方 CLI 清单 `antigravity.google/cli/latest.yml`，兜底 1.15.8）。
+  - **配额端点 UA 必须是完整 hub 形态**：`antigravity/hub/<ver> (aidev_client; os_type=darwin; arch=arm64; cl=998881661)`（依据 Antigravity-Manager `constants.rs`，MIT）。缺 `(aidev_client; ...)` 段的裸 UA（`antigravity/hub/2.23.0 darwin/arm64`）会被判 **#3501「You do not have a valid license of this product」** 回 403，与订阅真假无关（Pro 账号一样中招）。
+  - **403 先剥 project 再换域名**：带 `project` 的配额请求会被当作云项目授权校验，project 不属该账号授权即 #3501。实测三个接口都忽略 project，故带 project 被拒时改 `{}` 重试，再不行换 sandbox → prod 域名（同 Antigravity-Manager 的 QUOTA_SUMMARY_ENDPOINTS 顺序）。只有 401 才报登录失效。
   - `resolveModel` 先查「模型目录里真有的 id」再做子串路由：`gemini-4-argon` 含 `pro`，否则会被改写成 `gemini-pro-agent`。
   - **额度查询路径的 403 不等于登录失效**：403 常见于权限/订阅分流（free-tier 访问部分 RPC 返回 `SUBSCRIPTION_REQUIRED`），此时应降级继续查配额并把真实状态码写进 detail；只有 401 才是重新登录。对话路径的 `classify` 仍保持 401/403 → `SESSION_DEAD`（见第 5 节铁律，勿改）。
 

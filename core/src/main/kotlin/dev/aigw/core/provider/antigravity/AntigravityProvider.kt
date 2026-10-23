@@ -553,30 +553,22 @@ class AntigravityProvider(
         return ""
     }
 
-    /** CLI 版本（1.x 序列）：优先取官方 CLI 清单，取不到用 [AntigravityVersion.CLI_FALLBACK_VERSION]。 */
-    private fun cliClientVersion(): String = AntigravityVersion.currentCli()
-
     /** 当前生效的 User-Agent：版本随官方清单更新，不再写死。 */
     private fun userAgent(): String = "antigravity/hub/${clientVersion()} darwin/arm64"
 
     /**
-     * 配额/订阅类端点的 UA 候选。
+     * 配额/订阅类端点的 UA 候选（顺序即优先级）。
      *
-     * Google 按 UA 分流 `retrieveUserQuotaSummary`：hub（桌面 App）UA 会被 403 拒掉。
-     * CLI 的 UA 又有自己的版本序列（1.x，与 hub 的 2.x 不通用）——把 hub 版本塞进
-     * `antigravity/cli/2.23.0` 同样会 403「不支持的客户端版本」。所以这里不写死，
-     * 依次试候选形态，哪个被接受就缓存哪个；全部失败则保留最后一次结果，让上层看到真实状态码。
+     * 依据 Antigravity-Manager 的 `constants.rs`（MIT）：Google 对这类端点做客户端识别，
+     * 要求 UA 含 `antigravity` 且形态是官方 hub 出站串
+     * `antigravity/hub/<ver> (aidev_client; os_type=..; arch=..; cl=..)`。
+     * 缺 `(aidev_client; ...)` 段的裸形态会被判「无有效 license」的 403（#3501）。
+     * 依次试，哪个被接受就缓存；全部失败则把最后一次的真实状态码交给上层展示。
      */
-    private fun quotaUserAgentCandidates(): List<String> {
-        val cliVersion = cliClientVersion()
-        return listOf(
-            "antigravity/cli/$cliVersion linux/amd64",
-            "antigravity/$cliVersion linux/amd64",
-            "antigravity/$cliVersion",
-            // 最后一档退回 hub UA：部分账号/端点组合下它就是可用的，不能因为前面的形态被拒就放弃
-            userAgent(),
-        ).distinct()
-    }
+    private fun quotaUserAgentCandidates(): List<String> = listOf(
+        AntigravityVersion.hubUserAgent(),
+        userAgent(),
+    ).distinct()
 
     /** 已被上游接受的配额 UA（按配额端点分别记住，避免每次刷新都重试一遍）。 */
     @Volatile
@@ -741,14 +733,31 @@ class AntigravityProvider(
     /**
      * 模型组配额（桌面 App 展示的「Weekly Limit / Five Hour Limit」）。必须走 daily- 前缀域名：
      * 非前缀域名对 Gemini 组永远返回 remainingFraction=1（错误数据，见 agy 语言服务器日志）。
+     *
+     * 带 `project` 的请求会被上游用作「云项目授权」校验；本地登录拿到的 project id 若不属于
+     * 该账号的有效授权，就会回 #3501（You do not have a valid license）。实测三个接口都忽略
+     * project 字段，所以带了被拒时换成空请求体重试（同 Antigravity-Manager 的 fallback）。
      */
     private fun loadQuotaSummary(accessToken: String, projectId: String): Pair<Int, String> {
-        val payload = if (projectId.isEmpty()) {
-            "{}"
-        } else {
-            JsonObject().apply { addProperty("project", projectId) }.toString()
+        // 只有用默认域名时才回退到 sandbox/prod；显式传了 base（单测的假上游）就只打它
+        val bases = if (quotaBase == QUOTA_BASE) listOf(quotaBase) + QUOTA_FALLBACK_BASES else listOf(quotaBase)
+        var last: Pair<Int, String> = 0 to ""
+        for (base in bases) {
+            val result = queryQuotaOn(base, accessToken, projectId)
+            if (result.first == 401 || result.first in 200..299) return result
+            last = result
         }
-        return postQuotaEndpoint("$quotaBase/$API_VERSION:retrieveUserQuotaSummary", accessToken, payload)
+        return last
+    }
+
+    private fun queryQuotaOn(base: String, accessToken: String, projectId: String): Pair<Int, String> {
+        val url = "$base/$API_VERSION:retrieveUserQuotaSummary"
+        if (projectId.isEmpty()) return postQuotaEndpoint(url, accessToken, "{}")
+        val payload = JsonObject().apply { addProperty("project", projectId) }.toString()
+        val result = postQuotaEndpoint(url, accessToken, payload)
+        if (result.first == 401 || result.first in 200..299) return result
+        val retry = postQuotaEndpoint(url, accessToken, "{}")
+        return if (retry.first in 200..299) retry else result
     }
 
     /** 无积分可显示时，账号卡片余额取最紧窗口的剩余百分比，detail 标注订阅层级。 */
@@ -979,6 +988,15 @@ class AntigravityProvider(
          * 会回 429 RESOURCE_EXHAUSTED（与额度无关），只留作 loadCodeAssist 等账号类接口。
          */
         const val QUOTA_BASE = "https://daily-cloudcode-pa.googleapis.com"
+
+        /**
+         * 配额查询的备用域名：sandbox 与 prod。daily 返回 403/429/5xx 时依次回退
+         * （Antigravity-Manager 的 QUOTA_SUMMARY_ENDPOINTS 同样按 daily → sandbox → prod）。
+         */
+        val QUOTA_FALLBACK_BASES = listOf(
+            "https://daily-cloudcode-pa.sandbox.googleapis.com",
+            "https://cloudcode-pa.googleapis.com",
+        )
 
         /** 上游保留的内部/实验模型，不对外暴露（清单与 CLIProxyAPI fetch_antigravity_models 一致）。 */
         private val EXCLUDED_MODELS = setOf(

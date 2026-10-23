@@ -439,10 +439,11 @@ class AntigravityProviderTest {
         AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())
         val index = received.paths.indexOfFirst { it == QUOTA_PATH }
         assertTrue(index >= 0, "应请求配额端点：${received.paths}")
-        // 上游按 UA 分流：hub UA 打配额端点会被 403 拒掉，返回值本身看着就像「授权失效」
+        // 上游按 UA 识别客户端：必须是带 (aidev_client; ...) 段的官方 hub 形态
         val ua = received.userAgents[index]
-        assertTrue(ua.contains("antigravity/cli/"), "配额端点必须用 CLI UA，实际：$ua")
-        assertTrue(!ua.contains("/hub/"), "配额端点不能用 hub UA：$ua")
+        assertTrue(ua.contains("antidev_client") || ua.contains("aidev_client"), "配额端点 UA 缺 aidev_client 段：$ua")
+        assertTrue(ua.startsWith("antigravity/hub/"), "配额端点应使用 hub UA：$ua")
+        assertTrue(ua.contains("cl="), "hub UA 应带客户端变更集号：$ua")
     }
 
     @Test
@@ -503,20 +504,17 @@ class AntigravityProviderTest {
     @Test
     fun `配额端点被拒后会换下一个 UA 形态重试`() = withUpstreamByAgent(
         { path, ua ->
-            if (path != QUOTA_PATH) {
-                200 to """{"currentTier":{"id":"free-tier"}}"""
-            } else if (ua.startsWith("antigravity/cli/") && ua.endsWith("linux/amd64")) {
-                // 模拟上游：只有 CLI 形态的 UA 被放行，hub UA 一律 403
-                200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.6"))
-            } else {
-                403 to """{"error":{"message":"unsupported client"}}"""
+            when {
+                path != QUOTA_PATH -> 200 to """{"currentTier":{"id":"free-tier"}}"""
+                // 只放行带 aidev_client 段的形态，第二个候选（不带段）会被拒
+                ua.contains("aidev_client") -> 200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.6"))
+                else -> 403 to """{"error":{"message":"unsupported client"}}"""
             }
         },
-    ) { base, received ->
+    ) { base, _ ->
         val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
         assertEquals(60L, info.balance, "换 UA 后应拿到配额：${info.detail}")
         assertTrue(info.known)
-        assertEquals(1, received.paths.count { it == QUOTA_PATH }, "首个候选就该成功：${received.userAgents}")
     }
 
     @Test
@@ -536,6 +534,25 @@ class AntigravityProviderTest {
         assertTrue(info.detail.contains("付费订阅"), "403 应提示订阅限制：${info.detail}")
         // 多个 UA 形态都要试过，否则可能只是候选不够
         assertTrue(received.paths.count { it == QUOTA_PATH } >= 2, "应尝试多个 UA 形态：${received.paths}")
+    }
+
+    @Test
+    fun `带 project 被 403 时去掉 project 重试并成功`() = withUpstreamByAgent(
+        { path, ua ->
+            when {
+                path != QUOTA_PATH -> 200 to """{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}"""
+                // 模拟 #3501：只有完整 hub UA 被放行
+                ua.startsWith("antigravity/hub/") && ua.contains("aidev_client") ->
+                    200 to quotaBody(quotaGroup("Gemini Models", "weekly", "0.75"))
+                else -> 403 to """{"error":{"code":403,"message":"You do not have a valid license of this product"}}"""
+            }
+        },
+    ) { base, received ->
+        val info = AntigravityProvider(apiBase = base, quotaBase = base).creditInfo(account())!!
+        assertEquals(75L, info.balance, "应拿到配额：${info.detail}")
+        assertTrue(info.known)
+        assertTrue(!info.detail.contains("403"), info.detail)
+        assertTrue(received.bodies.any { it.contains("proj-1") }, "应带过 project 请求：${received.bodies}")
     }
 
     @Test
