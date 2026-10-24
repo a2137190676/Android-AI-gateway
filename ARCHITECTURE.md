@@ -1,9 +1,5 @@
 # AI Gateway 架构地图（接盘必读）
 
-> ## ⚠️ 已更新至 v2.13.1 版本的用户需点击项目仓库下载更新，因为应用内更新有 bug
->
-> v2.13.1 及更早的应用内更新实现缺少 `android.permission.REQUEST_INSTALL_PACKAGES` 声明，点「安装」不会跳出系统安装器（`canRequestPackageInstalls()` 恒为 false，且系统「安装未知应用」列表里不会出现本应用）。这些版本只能到 [Releases](https://github.com/xibai6668/Android-AI-gateway/releases/latest) 手动下载 APK 安装。
-
 > 本文档是整个系统的完整认知地图。它回答四个问题：**这个软件是干什么的、它是怎么工作的、每个模块为什么存在、改代码时什么能碰什么不能碰。**
 > 任何修改前请先读完本文档；本文档与代码不一致时，以代码为准并同步更新本文档。
 
