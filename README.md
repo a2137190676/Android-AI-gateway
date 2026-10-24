@@ -1,9 +1,5 @@
 # AI 聚合网关
 
-> ## ⚠️ 已更新至 v2.13.1 版本的用户需点击项目仓库下载更新，因为应用内更新有 bug
->
-> v2.13.1 及应用内更新功能的早期版本：下载完成后点击「安装」不会跳转到系统安装器（缺少 `REQUEST_INSTALL_PACKAGES` 声明），因此**不要使用应用内更新**，请直接到 [Releases](https://github.com/xibai6668/Android-AI-gateway/releases/latest) 下载 APK 手动安装。该问题已在后续版本修复。
-
 Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账号统一翻译成 OpenAI 兼容接口，暴露在 `http://127.0.0.1:8790/v1`。
 
 任何支持 OpenAI 协议的客户端（Cline、Cherry Studio、Continue、curl 脚本……）都能直接接上手机里的所有账号额度。
