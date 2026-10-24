@@ -494,6 +494,15 @@ class CodeBuddyProvider(
     /**
      * 任务：未领取的先接单（进度从接单那刻才开始计），已接单且达标的领奖。
      */
+    /**
+     * 取 CodeBuddy 响应里的 `data` 外层。
+     *
+     * 该供应商大部分接口把业务字段包在 `{code,msg,data}` 里，个别接口直接给顶层对象，
+     * 少了这一步会静默地「什么都读不到」——而且看上去像上游没有数据（例如成长任务中心
+     * 会显示「活动未开启」、「领取」按钮点了没反应）。
+     */
+    private fun dataOrRoot(obj: JsonObject): JsonObject = obj.objOrNull("data") ?: obj
+
     private fun claimTasks(
         credential: Credential,
         base: String,
@@ -503,33 +512,32 @@ class CodeBuddyProvider(
         runCatching {
             val (status, body) = getJson("$base/tasks", headers)
             if (status !in 200..299) return@runCatching
-            val tasks = jsonOf(body)?.arrayOrNull("tasks") ?: return@runCatching
-            for (element in tasks) {
-                val task = runCatching { element.asJsonObject }.getOrNull() ?: continue
-                if (task.get("locked")?.asBoolean == true) continue
-                val acceptStatus = task.firstString("accept_status")
-                if (acceptStatus == "claimed") continue
-
-                val progress = task.objOrNull("progress")
-                val target = progress?.firstLong("target")?.takeIf { it > 0 } ?: 1L
-                val current = progress?.firstLong("current") ?: 0L
-                val done = current >= target
-                // 已接单但还没做完：等用户完成，别重复提交
-                if (!done && acceptStatus.isNotEmpty()) continue
-                val claiming = done && acceptStatus.isNotEmpty()
-
-                val taskCode = task.firstString("task_code")
-                if (taskCode.isEmpty()) continue
-                val payload = JsonObject().apply { addProperty("task_code", taskCode) }.toString()
+            for (task in parseGrowthTasks(body).tasks) {
+                if (!needsTaskAccept(task)) continue
+                val payload = JsonObject().apply { addProperty("task_code", task.code) }.toString()
                 val (code, text) = postJson("$base/tasks/accept", credential, payload, headers)
                 if (code !in 200..299) continue
-                val title = task.firstString("title").ifEmpty { taskCode }
-                val credit = jsonOf(text)?.firstLong("credit") ?: 0L
+                val credit = jsonOf(text)?.let { dataOrRoot(it) }?.firstLong("credit") ?: 0L
                 parts.add(
-                    if (claiming && credit > 0) "领任务奖「$title」+$credit" else "领取任务「$title」",
+                    if (task.progressDone && credit > 0) "领任务奖「${task.title}」+$credit" else "领取任务「${task.title}」",
                 )
             }
         }
+    }
+
+    /**
+     * 该任务现在是否要发 accept 请求。
+     *
+     * 上游 `accept_status` 取值是 `not_accepted` / `in_progress` / `claimed`：
+     * - `claimed` 已领完，不再打；
+     * - `in_progress` 且未做完：已经接单，等用户完成，不重复提交；
+     * - 其余（含 `not_accepted`）要接单——按官方说明，**不先接单就不会记进度**；
+     * - 已完成且未领取：这次请求就是领奖。
+     */
+    internal fun needsTaskAccept(task: ProviderTask): Boolean = when {
+        task.claimed -> false
+        task.status.equals("in_progress", ignoreCase = true) && !task.progressDone -> false
+        else -> true
     }
 
     /** 盲盒：有配额才开。 */
@@ -553,7 +561,49 @@ class CodeBuddyProvider(
     }
 
     /**
-     * 成长任务明细：读 `/v2/activity/growth/tasks`，把 `tasks[]` 映射成 [ProviderTask]。
+     * 解析成长任务报文（单独提出供单测）：任务挂在 `data.tasks` 下，与其它 CodeBuddy 接口一致。
+     *
+     * 上游不保证返回 `in_period`（成长任务接口就没有这个字段），缺失时记为 null（未知），
+     * 不能默认成“不在期”——那会在界面上伪造一条「活动未开启」。
+     */
+    internal fun parseGrowthTasks(body: String): ProviderTaskListView {
+        val obj = jsonOf(body) ?: return ProviderTaskListView(emptyList(), error = "响应不是合法 JSON")
+        val payload = dataOrRoot(obj)
+        val inPeriod = payload.get("in_period")?.let { if (it.isJsonPrimitive) it.asBoolean else null }
+        val array = payload.arrayOrNull("tasks") ?: JsonArray()
+        val tasks = array.mapNotNull { element ->
+            val task = runCatching { element.asJsonObject }.getOrNull() ?: return@mapNotNull null
+            val code = task.firstString("task_code")
+            if (code.isEmpty()) return@mapNotNull null
+            // 进度既可能在顶层 current/target，也可能藏在 progress 对象里，后者优先
+            var current = task.firstLong("current")
+            var target = task.firstLong("target")
+            task.objOrNull("progress")?.let { progress ->
+                val pc = progress.firstLong("current")
+                val pt = progress.firstLong("target")
+                if (pt > 0 || pc > 0) {
+                    current = pc
+                    target = pt
+                }
+            }
+            val acceptStatus = task.firstString("accept_status")
+            ProviderTask(
+                code = code,
+                title = task.firstString("title").ifEmpty { code },
+                description = task.firstString("description"),
+                current = current,
+                target = target,
+                status = acceptStatus,
+                locked = task.get("locked")?.asBoolean ?: false,
+                claimed = acceptStatus == "claimed",
+                rewardCredit = task.firstLong("reward_credit"),
+            )
+        }
+        return ProviderTaskListView(tasks, inPeriod = inPeriod)
+    }
+
+    /**
+     * 成长任务明细：读 `/v2/activity/growth/tasks`，把 `data.tasks[]` 映射成 [ProviderTask]。
      *
      * 只读，不触发任何领取动作，供任务中心展示「哪些做了、哪些没做」。
      * 国际版（workbuddy.ai）没有成长中心，直接返回空列表。
@@ -571,39 +621,7 @@ class CodeBuddyProvider(
                     error = failure("成长中心", endpoint(credential), "${chatBase(credential)}$PATH_GROWTH/tasks", status, body),
                 )
             }
-            val obj = jsonOf(body) ?: return ProviderTaskListView(emptyList(), error = "响应不是合法 JSON")
-            val inPeriod = obj.get("in_period")?.asBoolean ?: false
-            val array = obj.arrayOrNull("tasks")
-                ?: return ProviderTaskListView(emptyList(), inPeriod = inPeriod)
-            val tasks = array.mapNotNull { element ->
-                val task = runCatching { element.asJsonObject }.getOrNull() ?: return@mapNotNull null
-                val code = task.firstString("task_code")
-                if (code.isEmpty()) return@mapNotNull null
-                // 进度既可能在顶层 current/target，也可能藏在 progress 对象里，后者优先
-                var current = task.firstLong("current")
-                var target = task.firstLong("target")
-                task.objOrNull("progress")?.let { progress ->
-                    val pc = progress.firstLong("current")
-                    val pt = progress.firstLong("target")
-                    if (pt > 0 || pc > 0) {
-                        current = pc
-                        target = pt
-                    }
-                }
-                val acceptStatus = task.firstString("accept_status")
-                ProviderTask(
-                    code = code,
-                    title = task.firstString("title").ifEmpty { code },
-                    description = task.firstString("description"),
-                    current = current,
-                    target = target,
-                    status = acceptStatus,
-                    locked = task.get("locked")?.asBoolean ?: false,
-                    claimed = acceptStatus == "claimed",
-                    rewardCredit = task.firstLong("reward_credit"),
-                )
-            }
-            ProviderTaskListView(tasks, inPeriod = inPeriod)
+            parseGrowthTasks(body)
         } catch (e: Exception) {
             ProviderTaskListView(emptyList(), error = e.message ?: "拉取任务列表失败")
         }

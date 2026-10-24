@@ -80,12 +80,16 @@ data class ProviderTask(
 
 /**
  * 一个账号的成长任务列表快照。
- *
- * [inPeriod] 表示活动是否在期（对齐上游 `in_period`）：不在期时任务可能为空。
  */
 data class ProviderTaskListView(
     val tasks: List<ProviderTask>,
-    val inPeriod: Boolean = false,
+    /**
+     * 活动是否在期（对齐上游 `in_period`）：true 在期、false 不在期、**null 表示上游没给这个字段**。
+     *
+     * 用三态而不是默认 false：不是每个任务接口都返回 in_period，默认 false 会让界面把
+     * 「上游没说」当成「活动已结束」展示。
+     */
+    val inPeriod: Boolean? = null,
     /** 非空表示拉取失败（凭证失效、上游报错等），界面据此提示。 */
     val error: String = "",
 )
