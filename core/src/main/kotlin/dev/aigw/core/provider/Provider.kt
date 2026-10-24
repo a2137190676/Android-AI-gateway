@@ -146,6 +146,15 @@ interface Provider {
     fun performAction(account: ProviderAccount, action: String, payload: JsonObject): ProviderActionResult =
         ProviderActionResult.unsupported(action)
 
+    /**
+     * 这个账号是否适用该动作。默认适用。
+     *
+     * 用于批量动作选目标：区域型供应商的**国际版本来就没有签到/成长中心**，
+     * 应该在选目标时就把它排掉，而不是批量跑完了才逐个报「国际版没有⋯」——
+     * 那种报错既无用又刷屏。
+     */
+    fun supportsAction(account: ProviderAccount, action: String): Boolean = true
+
     /** 粘贴 JSON 凭证导入；不支持则返回 null。 */
     fun importCredentials(raw: String): ProviderAccount? = null
 }

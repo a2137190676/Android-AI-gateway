@@ -231,7 +231,8 @@ class CodeBuddyProvider(
         action: String,
         payload: JsonObject,
     ): ProviderActionResult {
-        // 国际版（workbuddy.ai）没有签到制度与成长中心，这两个操作只对国内版有意义
+        // 国际版（workbuddy.ai）没有签到制度与成长中心，这两个操作只对国内版有意义。
+        // 选目标时已由 [supportsAction] 排掉，这里只是兵底（防止直接调用绕过过滤）。
         val credential = parse(account)
         if (credential != null && regionOf(credential) == REGION_GLOBAL) {
             return when (action) {
@@ -240,9 +241,7 @@ class CodeBuddyProvider(
                 else -> ProviderActionResult.unsupported(action)
             }
         }
-        // 企业账号没有个人成长体系：签到/成长/连签类调用上游必失败
-        // （`400 code 10001` 或 `403 growth system is only available for personal users`），
-        // 直接短路不发请求；企业额度走 billing 的 get-enterprise-user-usage。
+        // 企业账号没有个人成长体系：同属不适用，选目标时已排掉
         if (credential != null && credential.enterpriseId.isNotEmpty()) {
             return when (action) {
                 ACTION_CHECKIN, ACTION_TASKS ->
@@ -250,11 +249,31 @@ class CodeBuddyProvider(
                 else -> ProviderActionResult.unsupported(action)
             }
         }
+        // 指定了具体任务就是「只领这一个」（详情页单个任务上的领取按钮）
+        val singleTask = payload.get("task_code")?.asString.orEmpty()
         return when (action) {
             ACTION_CHECKIN -> checkin(account)
-            ACTION_TASKS -> growth(account)
+            ACTION_TASKS -> if (singleTask.isEmpty()) growth(account) else claimSingleTask(account, singleTask)
             else -> ProviderActionResult.unsupported(action)
         }
+    }
+
+    /** 单个任务的领奖（详情页用）：先确保已接单，再领奖。 */
+    private fun claimSingleTask(account: ProviderAccount, taskCode: String): ProviderActionResult {
+        val credential = parse(account) ?: return ProviderActionResult.failure("凭证无法解析")
+        val base = "${chatBase(credential)}$PATH_GROWTH"
+        val headers = billingHeaders(credential)
+        val parts = ArrayList<String>()
+        acceptTaskCodes(credential, base, headers, listOf(taskCode), parts)
+        val body = fetchTasksBody(credential, base, headers)
+            ?: return ProviderActionResult.failure("拉取任务列表失败")
+        val task = parseGrowthTasks(body).tasks.firstOrNull { it.code == taskCode }
+            ?: return ProviderActionResult.failure("任务不存在：$taskCode")
+        if (!task.progressDone) {
+            return ProviderActionResult.failure("「${task.title}」还没完成，无法领奖")
+        }
+        claimTaskReward(credential, task, parts)
+        return ProviderActionResult.success(parts.joinToString("；").ifEmpty { "「${task.title}」暂无可领取的奖励" })
     }
 
     /**
@@ -510,23 +529,67 @@ class CodeBuddyProvider(
         parts: MutableList<String>,
     ) {
         runCatching {
-            val (status, body) = getJson("$base/tasks", headers)
-            if (status !in 200..299) return@runCatching
-            for (task in parseGrowthTasks(body).tasks) {
-                if (!needsTaskAccept(task)) continue
-                val payload = JsonObject().apply { addProperty("task_code", task.code) }.toString()
-                val (code, text) = postJson("$base/tasks/accept", credential, payload, headers)
-                if (code !in 200..299) continue
-                val credit = jsonOf(text)?.let { dataOrRoot(it) }?.firstLong("credit") ?: 0L
-                parts.add(
-                    if (task.progressDone && credit > 0) "领任务奖「${task.title}」+$credit" else "领取任务「${task.title}」",
-                )
+            val tasks = fetchTasksBody(credential, base, headers)
+                ?.let { parseGrowthTasks(it).tasks }
+                .orEmpty()
+            if (tasks.isEmpty()) return@runCatching
+            // 1) 先接单：上游要求先接单才记进度（官方客户端上的「去完成」）
+            acceptTaskCodes(credential, base, headers, tasks.filter { needsTaskAccept(it) }.map { it.code }, parts)
+            // 2) 再领奖：奖励不在 accept 响应里，要单独调 claim（官方客户端上的「领取奖励」）
+            for (task in tasks) {
+                if (!task.claimable) continue
+                claimTaskReward(credential, task, parts)
+            }
+        }
+    }
+
+    /** 拉任务列表原始报文；上游非 2xx 时返回 null（调用方各自处理）。 */
+    private fun fetchTasksBody(credential: Credential, base: String, headers: Map<String, String>): String? {
+        val (status, body) = getJson("$base/tasks", headers)
+        return body.takeIf { status in 200..299 }
+    }
+
+    /**
+     * 批量接单：上游按批接收 `task_codes`（参照实现一次最多 20 个）。
+     *
+     * 接单失败过去被静默吞掉，任务自然永远不点亮，看上去像「这个按钮没用」。
+     */
+    private fun acceptTaskCodes(
+        credential: Credential,
+        base: String,
+        headers: Map<String, String>,
+        codes: List<String>,
+        parts: MutableList<String>,
+    ) {
+        if (codes.isEmpty()) return
+        for (chunk in codes.distinct().chunked(ACCEPT_CHUNK_SIZE)) {
+            runCatching {
+                val (status, _) = postJson("$base/tasks/accept", credential, acceptPayload(chunk), headers)
+                if (status !in 200..299) return@runCatching
+                parts.add("接取任务 ${chunk.size} 个")
             }
         }
     }
 
     /**
-     * 该任务现在是否要发 accept 请求。
+     * 领单个任务的奖励。
+     *
+     * 注意路径**没有 `/v2` 前缀**（与领养 Buddy 等接口一致），响应里是 `data.credit` / `data.energy`。
+     */
+    private fun claimTaskReward(credential: Credential, task: ProviderTask, parts: MutableList<String>) {
+        runCatching {
+            val url = "${chatBase(credential)}$PATH_GROWTH/tasks/${task.code}/claim"
+            val (status, body) = postJson(url, credential, "{}", billingHeaders(credential))
+            if (status !in 200..299) return@runCatching
+            val envelope = jsonOf(body)
+            // 200 + 非 0 业务码（典型：task not completed）算失败，不能当领到奖
+            if (envelope?.get("code")?.asLong?.let { it != 0L } == true) return@runCatching
+            val credit = envelope?.let { dataOrRoot(it) }?.firstLong("credit") ?: 0L
+            parts.add(if (credit > 0) "领任务奖「${task.title}」+$credit" else "领取任务「${task.title}」")
+        }
+    }
+
+    /** 该任务现在是否要发 accept 请求。
      *
      * 上游 `accept_status` 取值是 `not_accepted` / `in_progress` / `claimed`：
      * - `claimed` 已领完，不再打；
@@ -539,6 +602,12 @@ class CodeBuddyProvider(
         task.status.equals("in_progress", ignoreCase = true) && !task.progressDone -> false
         else -> true
     }
+
+    /** 接单请求体：上游要 `task_codes` 数组；提出来便于单测锁定形状。 */
+    internal fun acceptPayload(codes: List<String>): String =
+        JsonObject().apply {
+            add("task_codes", JsonArray().apply { codes.forEach { add(it) } })
+        }.toString()
 
     /** 盲盒：有配额才开。 */
     private fun openBlindBox(
@@ -608,6 +677,17 @@ class CodeBuddyProvider(
      * 只读，不触发任何领取动作，供任务中心展示「哪些做了、哪些没做」。
      * 国际版（workbuddy.ai）没有成长中心，直接返回空列表。
      */
+    /**
+     * 签到/成长中心只对国内个人账号存在：国际版没有这套体系，企业账号走企业额度口径。
+     * 批量选目标时就会把这两种排掉，不会跑完再报错。
+     */
+    override fun supportsAction(account: ProviderAccount, action: String): Boolean {
+        if (action != ACTION_CHECKIN && action != ACTION_TASKS) return true
+        val credential = parse(account) ?: return true
+        if (regionOf(credential) == REGION_GLOBAL) return false
+        return credential.enterpriseId.isEmpty()
+    }
+
     override fun taskList(account: ProviderAccount): ProviderTaskListView? {
         val credential = parse(account) ?: return ProviderTaskListView(emptyList(), error = "凭证无法解析")
         if (regionOf(credential) == REGION_GLOBAL) return ProviderTaskListView(emptyList())
@@ -783,14 +863,36 @@ class CodeBuddyProvider(
 
     // ------------------------------------------------------------------ 设备授权登录
 
+    /**
+     * 授权端点专用请求头。
+     *
+     * 这两个接口必须在头上**明确声明自己不携带鉴权信息**（`X-No-Authorization` 等），
+     * 否则网关会当成一个缺少凭据的普通请求而拒掉——表现就是「浏览器里登录完了，回到 App 报错」。
+     * 依据两份独立实现：`cainiao1992/dsh-codebuddy-auth` 的 `NO_AUTH_HEADERS` 与
+     * `CLIProxyAPIPlus` 的 `applyPollHeaders` / `FetchAuthState`。
+     */
+    internal fun authHeaders(base: String, withBody: Boolean): Map<String, String> = buildMap {
+        put("Accept", "application/json, text/plain, */*")
+        if (withBody) put("Content-Type", "application/json")
+        put("X-Requested-With", "XMLHttpRequest")
+        put("X-Domain", base)
+        put("X-No-Authorization", "true")
+        put("X-No-User-Id", "true")
+        put("X-No-Enterprise-Id", "true")
+        put("X-No-Department-Info", "true")
+        put("X-Product", "SaaS")
+        put("User-Agent", CLIENT_UA)
+        put("X-Request-ID", java.util.UUID.randomUUID().toString())
+    }
+
     override fun startDeviceAuth(region: String): DeviceAuthTicket {
         val base = endpointOf(region).chatBase
         val (status, text) = try {
-            postJson("$base$PATH_AUTH_STATE?platform=CLI", null, "{}", emptyMap())
+            postJson("$base$PATH_AUTH_STATE?platform=CLI", null, "{}", authHeaders(base, withBody = true))
         } catch (e: Exception) {
             throw IllegalStateException("请求授权链接失败：${e.message}")
         }
-        if (status !in 200..299) throw IllegalStateException("请求授权链接失败（HTTP $status）")
+        if (status !in 200..299) throw IllegalStateException("请求授权链接失败（HTTP $status）：${text.take(160)}")
         val data = envelopeData(text) ?: throw IllegalStateException("授权响应异常：${text.take(200)}")
         val state = data.get("state")?.asString.orEmpty()
         val authUrl = data.get("authUrl")?.asString.orEmpty()
@@ -802,21 +904,23 @@ class CodeBuddyProvider(
         val base = endpointOf(region).chatBase
         val encoded = URLEncoder.encode(state, "UTF-8")
         val (status, text) = try {
-            getJson("$base$PATH_AUTH_TOKEN?state=$encoded")
+            getJson("$base$PATH_AUTH_TOKEN?state=$encoded", authHeaders(base, withBody = false))
         } catch (e: Exception) {
             return DeviceAuthPoll.Failed(e.message ?: "轮询失败")
         }
-        if (status !in 200..299) return DeviceAuthPoll.Failed("轮询失败（HTTP $status）")
+        if (status !in 200..299) return DeviceAuthPoll.Failed("轮询失败（HTTP $status）：${text.take(160)}")
         val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
             ?: return DeviceAuthPoll.Failed("轮询响应不是合法 JSON")
-        val code = obj.get("code")?.asLong ?: -1L
-        if (code == CODE_LOGIN_PENDING) return DeviceAuthPoll.Pending
-        if (code != 0L) {
-            val message = obj.get("msg")?.asString.orEmpty()
-            return DeviceAuthPoll.Failed(message.ifEmpty { "登录未完成（code=$code）" })
+        val code = obj.get("code")?.asLong ?: CODE_LOGIN_PENDING
+        val data = obj.objOrNull("data")
+        // 只有拿到 accessToken 才算成功；其余业务码一律继续轮询（与参照实现一致：
+        // 非 0 只是“还没好”，当错误会让用户在浏览器里刚登录完就看到报错）
+        if (code == 0L && !data?.get("accessToken")?.asString.isNullOrEmpty()) {
+            return DeviceAuthPoll.Success(toProviderAccount(credentialOf(data!!)))
         }
-        val data = obj.objOrNull("data") ?: return DeviceAuthPoll.Failed("登录响应缺少 data")
-        return DeviceAuthPoll.Success(toProviderAccount(credentialOf(data)))
+        // 非 0 业务码（含未预期的）继续轮询，不中断登录：
+        // 参照实现也把所有非成功码当「还没好」，当错误会让用户刚在浏览器里登录完就看到报错
+        return DeviceAuthPoll.Pending
     }
 
     // ------------------------------------------------------------------ 上游
@@ -1237,6 +1341,9 @@ class CodeBuddyProvider(
 
         const val PATH_AUTH_STATE = "/v2/plugin/auth/state"
         const val PATH_AUTH_TOKEN = "/v2/plugin/auth/token"
+
+        /** 接单接口按批接收 task_codes（参照实现一次最多 20 个）。 */
+        private const val ACCEPT_CHUNK_SIZE = 20
         const val PATH_TOKEN_REFRESH = "/v2/plugin/auth/token/refresh"
         const val PATH_CHAT = "/v2/chat/completions"
         const val PATH_MODELS_CN = "/console/enterprises/personal/models"

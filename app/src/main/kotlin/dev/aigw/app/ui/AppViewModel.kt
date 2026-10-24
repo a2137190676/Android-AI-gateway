@@ -47,7 +47,6 @@ import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.QuotaPack
 import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.RoutedModel
-import dev.aigw.core.provider.trae.TraeRegion
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
 import dev.aigw.core.update.ApkDownloader
@@ -1151,17 +1150,12 @@ class AppViewModel(
     /**
      * 对所有支持签到的账号批量签到。
      *
-     * 只签到 Trae 与 WorkBuddy 国内版（cn）：WorkBuddy 国际版（global）与 Trae 国际版
-     * 没有签到制度，跳过可避免每次批量签到都报错。
+     * 目标由供应商自己判定（[Provider.supportsAction]）：WorkBuddy 国际版、Trae 国际版
+     * 本就没有签到制度，选目标时就排掉，不会跑完再报一堆「没有签到」的错。
      * 并发与失败隔离由 [GatewayEngine.performActionAll] 负责；这里只负责选目标与汇总结果。
      */
     fun checkinAll() = runBatch("批量签到") { onProgress ->
-        val targets = engine.providers()
-            .filter { ProviderCapability.CHECKIN in it.capabilities }
-            .flatMap { info -> engine.accounts(info.id) }
-            // 区域型供应商的国际版没有签到制度（Trae INTL / WorkBuddy global），跳过避免整批报错
-            .filter { account -> accountRegion(account.providerId, account.uid) != TraeRegion.INTL.id }
-            .map { BatchTarget(it.providerId, it.uid) }
+        val targets = batchTargets(ACTION_CHECKIN, ProviderCapability.CHECKIN)
         if (targets.isEmpty()) throw IllegalStateException("还没有支持签到的账号")
         engine.performActionAll(targets, ACTION_CHECKIN, onProgress = onProgress)
     }
@@ -1180,13 +1174,23 @@ class AppViewModel(
                 .ifEmpty { "任务完成（${results.size} 个账号）" }
         },
     ) { onProgress ->
-        val targets = engine.providers()
-            .filter { ProviderCapability.TASKS in it.capabilities }
-            .flatMap { info -> engine.accounts(info.id) }
-            .map { BatchTarget(it.providerId, it.uid) }
+        val targets = batchTargets(ACTION_TASKS, ProviderCapability.TASKS)
         if (targets.isEmpty()) throw IllegalStateException("还没有支持任务的账号")
         engine.performActionAll(targets, ACTION_TASKS, onProgress = onProgress)
     }
+
+    /**
+     * 选批量目标：供应商声明支持该能力，且**这个账号**适用该动作。
+     *
+     * 账号级判定交给供应商（区域型供应商的国际版、企业账号本就没有签到/成长中心），
+     * 于是这类账号压根不进入流程，而不是跑完再逐条报错。
+     */
+    private fun batchTargets(action: String, capability: ProviderCapability): List<BatchTarget> =
+        engine.providers()
+            .filter { capability in it.capabilities }
+            .flatMap { info -> engine.accounts(info.id) }
+            .filter { account -> engine.supportsAction(account.providerId, account.uid, action) }
+            .map { BatchTarget(it.providerId, it.uid) }
 
     /**
      * 跑一批批量动作：后台 IO 执行、过程中把进度写回状态、结束后给结构化结果并刷新界面。

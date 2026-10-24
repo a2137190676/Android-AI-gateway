@@ -781,6 +781,18 @@ class GatewayEngine(
         return results
     }
 
+    /**
+     * 这个账号是否适用该批量动作（供应商自报，默认适用）。
+     *
+     * 供批量选目标时调用：区域型供应商的国际版、企业账号本就没有签到/成长中心，
+     * 应在选目标时排掉，而不是批量跑完再逐条报错。
+     */
+    fun supportsAction(providerId: String, uid: String, action: String): Boolean {
+        val provider = registry.get(providerId) ?: return false
+        val account = pool.account(providerId, uid) ?: return false
+        return provider.supportsAction(account, action)
+    }
+
     /** 批量动作的底层执行：不做额度补刷，供 [performAction] 与 [performActionAll] 共用。 */
     private fun performActionRaw(
         providerId: String,

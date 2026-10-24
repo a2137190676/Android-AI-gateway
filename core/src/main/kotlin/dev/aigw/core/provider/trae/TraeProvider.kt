@@ -288,13 +288,17 @@ class TraeProvider(
         }
     }
 
+    /** 签到只对国内版存在：国际版没有签到制度（前端 JS 里 checkin 零命中），选目标时先排掉。 */
+    override fun supportsAction(account: ProviderAccount, action: String): Boolean =
+        action != ACTION_CHECKIN || regionOfAccount(account) != TraeRegion.INTL
+
     override fun performAction(
         account: ProviderAccount,
         action: String,
         payload: JsonObject,
     ): ProviderActionResult = when (action) {
         ACTION_CHECKIN -> {
-            // 国际版没有签到制度（前端 JS 里 checkin 零命中）
+            // 国际版没有签到制度（前端 JS 里 checkin 零命中）；正常由 supportsAction 拦下
             if (regionOfAccount(account) == TraeRegion.INTL) {
                 ProviderActionResult.failure("国际版没有签到制度")
             } else {
