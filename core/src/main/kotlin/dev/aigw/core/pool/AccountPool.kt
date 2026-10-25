@@ -159,11 +159,6 @@ class AccountPool(
         else byProvider[providerId]?.size ?: 0
     }
 
-    /** 已知 provider 的 id 列表（按首次出现顺序）。 */
-    fun providerIds(): List<String> = lock.read {
-        entries.values.map { it.account.providerId }.distinct()
-    }
-
     // ---------------------------------------------------------------- 状态
 
     fun setEnabled(providerId: String, uid: String, enabled: Boolean, reason: String = "") {

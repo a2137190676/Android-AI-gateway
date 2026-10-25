@@ -298,8 +298,6 @@ data class AppUiState(
     val failover: dev.aigw.core.failover.ModelFailoverSettings = dev.aigw.core.failover.ModelFailoverSettings(),
     /** 出网取证记录列表。 */
     val evidences: List<dev.aigw.core.security.OutboundEvidence> = emptyList(),
-    /** 当前生效的脱敏规则词汇数。 */
-    val sanitizerRulesCount: Int = 0,
     val busy: String = "",
     val notice: String = "",
     /** 批量动作进行中的进度；非空时 UI 显示「已完成 X/N（当前：某账号）」。 */
@@ -340,7 +338,6 @@ private class Snapshot(
     val keepAlive: KeepAliveStatus,
     val security: dev.aigw.core.security.SecuritySettings,
     val evidences: List<dev.aigw.core.security.OutboundEvidence>,
-    val sanitizerRulesCount: Int,
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings,
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
@@ -446,7 +443,6 @@ class AppViewModel(
                     keepAlive = KeepAlive.status(app),
                     security = engine.securitySettings(),
                     evidences = engine.sanitizer.evidenceList(),
-                    sanitizerRulesCount = engine.sanitizer.currentRulesCount(),
                     modelExposure = engine.modelExposureSettings(),
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
@@ -471,7 +467,6 @@ class AppViewModel(
                 keepAlive = snapshot.keepAlive,
                 security = snapshot.security,
                 evidences = snapshot.evidences,
-                sanitizerRulesCount = snapshot.sanitizerRulesCount,
                 modelExposure = snapshot.modelExposure,
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
@@ -626,8 +621,6 @@ class AppViewModel(
     }
 
     // ------------------------------------------------------------------ 模型开放名单
-
-    fun modelExposure(): ModelExposureSettings = engine.modelExposureSettings()
 
     fun updateModelExposure(updated: ModelExposureSettings) {
         viewModelScope.launch {
@@ -1335,8 +1328,6 @@ class AppViewModel(
 
     // ------------------------------------------------------------------ 代理
 
-    fun proxySettings(): ProxySettings = engine.proxySettings()
-
     fun updateProxySettings(settings: ProxySettings) {
         _state.value = _state.value.copy(proxy = settings)
         viewModelScope.launch { withContext(Dispatchers.IO) { engine.updateProxySettings(settings) } }
@@ -1575,7 +1566,7 @@ class AppViewModel(
             if (!manual) updateStore.setLastCheckEpochDay(currentEpochDay())
             outcome.fold(
                 onSuccess = { info ->
-                    if (isNewer(info.version, installedVersionName())) {
+                    if (dev.aigw.core.update.isNewerVersion(info.version, installedVersionName())) {
                         _state.value = _state.value.copy(updateInfo = info)
                     } else if (manual) {
                         _state.value = _state.value.copy(notice = "已是最新版本（${installedVersionName()}）")
@@ -1601,18 +1592,6 @@ class AppViewModel(
             apkUrl = release.apkUrl,
             apkSize = release.apkSize,
         )
-    }
-
-    /** 逐段比较版本号，远端更大返回 true。 */
-    private fun isNewer(remote: String, local: String): Boolean {
-        val r = remote.split('.', '-').mapNotNull { it.toIntOrNull() }
-        val l = local.split('.', '-').mapNotNull { it.toIntOrNull() }
-        for (i in 0 until maxOf(r.size, l.size)) {
-            val a = r.getOrElse(i) { 0 }
-            val b = l.getOrElse(i) { 0 }
-            if (a != b) return a > b
-        }
-        return false
     }
 
     /** 当前安装的版本名。 */

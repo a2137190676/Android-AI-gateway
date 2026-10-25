@@ -124,9 +124,3 @@ fun AiGatewayTheme(
         MaterialTheme(colorScheme = scheme, shapes = AppShapes, content = content)
     }
 }
-
-/** Hero 黑金渐变（#1A1A1A → #080808）。 */
-val HeroGradient: List<Color> = listOf(Color(0xFF1A1A1A), Color(0xFF080808))
-
-/** 可直接用于 Modifier.background(brush) 的渐变画笔。 */
-val HeroBrush: Brush get() = Brush.linearGradient(HeroGradient)

@@ -1041,12 +1041,6 @@ class GatewayEngine(
         return poll
     }
 
-    fun buildOAuthUrl(providerId: String): String {
-        val support = registry.get(providerId) as? LoopbackOAuthSupport
-            ?: throw IllegalStateException("该供应商不支持 OAuth 登录")
-        return support.buildAuthUrl()
-    }
-
     fun completeOAuth(providerId: String, callbackUrl: String): LoginOutcome {
         val support = registry.get(providerId) as? LoopbackOAuthSupport
             ?: return LoginOutcome(LoginState.FAILED, error = "该供应商不支持 OAuth 登录")

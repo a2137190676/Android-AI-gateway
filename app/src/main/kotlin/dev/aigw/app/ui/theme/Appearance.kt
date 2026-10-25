@@ -21,19 +21,6 @@ data class AppColors(
 ) {
     /** 金色文字：深金，在浅色底上比亮金更清晰。 */
     val goldText: Color get() = goldEnd
-
-    /** 按钮、激活态等金色渐变画笔。 */
-    val goldGradientBrush: Brush get() = Brush.horizontalGradient(listOf(goldStart, goldEnd))
-
-    /** 统计数据六色：首尾两项跟随自定义金，中间四项是固定语义色。 */
-    fun statColors(): List<Color> = listOf(
-        goldStart,          // 金——可用供应商
-        Color(0xFF3B82F6),  // 蓝——账号
-        Color(0xFF10B981),  // 绿——可用账号
-        Color(0xFFF59E0B),  // 橙——今日请求
-        Color(0xFF888888),  // 灰——今日 tokens
-        goldEnd,            // 深金——额度
-    )
 }
 
 /** 默认黑金配色。 */

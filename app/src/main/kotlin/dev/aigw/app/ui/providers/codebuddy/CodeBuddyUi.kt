@@ -39,8 +39,6 @@ import dev.aigw.app.ui.PagedAccountList
 import dev.aigw.app.ui.RegionSelector
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
-import dev.aigw.app.ui.bouncyClick
-import dev.aigw.app.ui.accountStatusText
 import dev.aigw.app.ui.providers.ProviderUi
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus

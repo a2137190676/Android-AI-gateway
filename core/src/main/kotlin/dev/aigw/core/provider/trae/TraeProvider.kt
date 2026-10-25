@@ -64,9 +64,6 @@ class TraeProvider(
     // TraeAuthClient 读取账号自身的 apiHost，不按区域分实例
     private val authClientSingleton: TraeAuthClient get() = authClients.computeIfAbsent(TraeRegion.CN) { TraeAuthClient(version()) }
 
-    @Suppress("UNUSED_PARAMETER")
-    private fun authClient(region: TraeRegion): TraeAuthClient = authClientSingleton
-
     private fun checkinClient(region: TraeRegion): TraeCheckinClient =
         checkinClients.computeIfAbsent(region) { TraeCheckinClient(version(), region.ugHost, region) }
 
@@ -213,7 +210,7 @@ class TraeProvider(
 
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val trae = parseOrNull(account) ?: return null
-        val refreshed = authClient(regionOfAccount(account)).refreshIfNeeded(trae, skewSeconds) ?: return null
+        val refreshed = authClientSingleton.refreshIfNeeded(trae, skewSeconds) ?: return null
         return toProviderAccount(refreshed)
     }
 
@@ -221,8 +218,8 @@ class TraeProvider(
     override fun importCredentials(raw: String): ProviderAccount {
         var account = ensureDeviceIds(TraeAccount.parse(raw))
         val region = TraeRegion.infer(account.domain, account.apiHost)
-        if (account.refreshToken.isNotEmpty()) account = authClient(region).exchangeToken(account)
-        account = authClient(region).getUserInfo(account)
+        if (account.refreshToken.isNotEmpty()) account = authClientSingleton.exchangeToken(account)
+        account = authClientSingleton.getUserInfo(account)
         if (account.uid.isEmpty()) throw IllegalStateException("无法确定账号 uid，请确认凭证完整")
         return toProviderAccount(account)
     }
@@ -414,8 +411,8 @@ class TraeProvider(
             domain = region.id,
             apiHost = region.oauthHost,
         )
-        if (account.refreshToken.isNotEmpty()) account = authClient(region).exchangeToken(account)
-        account = authClient(region).getUserInfo(account)
+        if (account.refreshToken.isNotEmpty()) account = authClientSingleton.exchangeToken(account)
+        account = authClientSingleton.getUserInfo(account)
         if (account.uid.isEmpty()) throw IllegalStateException("无法确定账号 uid，请确认登录已完成")
         return toProviderAccount(account)
     }
