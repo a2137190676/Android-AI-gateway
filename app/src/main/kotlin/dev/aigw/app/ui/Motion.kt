@@ -319,7 +319,10 @@ fun Modifier.scrollFade(
 }
 
 /**
- * 呼吸指示灯：陶土色圆点做 3s 周期的缩放 + 亮度呼吸。
+ * 呼吸指示灯：圆点做 3s 周期的缩放 + 亮度呼吸；[haloSize] 非空时额外画一圈柔光外晕
+ * （占位取 [haloSize]，核心仍是 [size] 大小）。
+ *
+ * [breathing] 为 false 时不动画、无外晕，仅画一个静态圆点。
  *
  * 时序借鉴 open-claude-ui（MIT, Caho1）逆向的 `dframe-clay-breathe`
  * （scale 0.86→1、brightness 0.96→1.06、3.0s ease-in-out）。
@@ -328,7 +331,22 @@ fun Modifier.scrollFade(
 fun Modifier.breathingDot(
     color: Color,
     size: Dp = 8.dp,
+    breathing: Boolean = true,
+    haloSize: Dp? = null,
 ): Modifier {
+    // 外晕只在显式给出时占位：不传即维持原来的纯圆点尺寸，不改变已有调用方的布局
+    val boxSize = haloSize ?: size
+    if (!breathing) {
+        return this
+            .size(boxSize)
+            .drawBehind {
+                val center = Offset(this.size.width / 2f, this.size.height / 2f)
+                if (haloSize != null) {
+                    drawCircle(color = color.copy(alpha = 0.22f), radius = (boxSize / 2).toPx(), center = center)
+                }
+                drawCircle(color = color, radius = (size / 2).toPx(), center = center)
+            }
+    }
     val transition = rememberInfiniteTransition(label = "breathe")
     val scale by transition.animateFloat(
         initialValue = 0.86f,
@@ -348,15 +366,29 @@ fun Modifier.breathingDot(
         ),
         label = "breatheAlpha",
     )
+    val actualHalo = boxSize
     return this
-        .size(size)
+        .size(actualHalo)
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
             this.alpha = alpha
         }
-        .clip(CircleShape)
-        .background(color)
+        .drawBehind {
+            val center = Offset(this.size.width / 2f, this.size.height / 2f)
+            if (haloSize != null) {
+                drawCircle(
+                    color = color.copy(alpha = 0.22f),
+                    radius = (actualHalo / 2).toPx(),
+                    center = center,
+                )
+            }
+            drawCircle(
+                color = color,
+                radius = (size / 2).toPx(),
+                center = center,
+            )
+        }
 }
 
 /**

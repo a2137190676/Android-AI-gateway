@@ -6,6 +6,20 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,24 +30,30 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -107,7 +127,9 @@ fun HomeScreen(
             },
         )
 
-        TelemetryGrid(state, Modifier.staggeredAppear(1))
+        LiveRoutingTopologyCard(state, Modifier.staggeredAppear(1))
+
+        TelemetryGrid(state, Modifier.staggeredAppear(2))
 
         // 批量动作进行中/结束：首页也要看得到进度与失败原因（签到按钮就在本页）
         BatchProgressHost(state.batchProgress)
@@ -115,7 +137,7 @@ fun HomeScreen(
 
         TrendCard(state)
 
-        SectionCard(modifier = Modifier.staggeredAppear(3)) {
+        SectionCard(modifier = Modifier.staggeredAppear(4)) {
             SectionHeader("快捷操作 · ACTIONS")
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -162,7 +184,7 @@ fun HomeScreen(
             }
         }
 
-        AntigravityQuotaSection(state, viewModel, baseIndex = 4)
+        AntigravityQuotaSection(state, viewModel, baseIndex = 5)
     }
 }
 
@@ -260,6 +282,372 @@ private fun ConsoleCard(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 实时调度拓扑卡：
+ * 1. 标题旁呼吸指示灯（运行中呼吸发光，停止时静止置灰）
+ * 2. 拓扑节点（客户端 → 网关中枢 → 上游账号）及流动虚线与光点
+ * 3. 网关中枢卡片金色描边与微发光晕
+ * 4. 可用账号各供应商分段彩色进度条（平滑过渡，严格说明真实含义）
+ * 5. 动态大号指标数字（实时请求数翻滚跳变）
+ */
+@Composable
+private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modifier) {
+    val gold = LocalAppColors.current.goldStart
+    val goldEnd = LocalAppColors.current.goldEnd
+    val isRunning = state.running
+    val latestCall = state.calls.firstOrNull()
+    val hasTraffic = isRunning && latestCall != null
+
+    // 虚线与流动光斑进度：有活跃请求且网关运行时循环流动，否则静止以极致省电
+    val flowPhase = if (hasTraffic) {
+        val transition = rememberInfiniteTransition(label = "topologyFlow")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 20f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1200, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "flowPhase",
+        ).value
+    } else {
+        0f
+    }
+
+    SectionCard(modifier = modifier) {
+        // 顶部小节头 + 呼吸指示灯
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                Modifier.breathingDot(
+                    color = if (isRunning) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    size = 7.dp,
+                    breathing = isRunning,
+                    haloSize = 15.dp,
+                ),
+            )
+            Text(
+                text = "实时调度拓扑 · LIVE TOPOLOGY",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.2.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            // 右侧今日请求大数字，跳变动效
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "TODAY",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 2.dp),
+                )
+                AnimatedContent(
+                    targetState = state.today.requests,
+                    transitionSpec = {
+                        slideInVertically(
+                            animationSpec = tween(Motion.TAB_MILLIS, easing = FastOutSlowInEasing),
+                        ) { it / 2 } + fadeIn() togetherWith
+                            slideOutVertically(
+                                animationSpec = tween(Motion.TAB_MILLIS, easing = FastOutSlowInEasing),
+                            ) { -it / 2 } + fadeOut()
+                    },
+                    label = "todayRequests",
+                ) { reqCount ->
+                    Text(
+                        text = if (reqCount > 0) formatCount(reqCount) else "—",
+                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                        fontWeight = FontWeight.Bold,
+                        color = if (reqCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // 拓扑主体：三节点 + 两条「只在节点间隙里」流动的连线。
+        // 连线由布局定位在窄缝里，不按整屏比例画——否则模型名一长，线就会穿过右侧文字。
+        val lineColor = MaterialTheme.colorScheme.outlineVariant
+        val activeLineColor = if (isRunning) gold.copy(alpha = 0.85f) else lineColor
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(86.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 左侧节点：客户端
+            TopologyNode(
+                title = "CLIENT",
+                subtitle = if (isRunning) "127.0.0.1" else "STOPPED",
+                modifier = Modifier.weight(1f),
+                alignStart = true,
+            )
+
+            FlowConnector(
+                active = hasTraffic,
+                phase = flowPhase,
+                color = activeLineColor,
+                dotColor = goldEnd,
+                modifier = Modifier
+                    .weight(0.35f)
+                    .height(24.dp),
+            )
+
+            // 中间节点：网关中枢（带金色描边与微发光晕）
+            GatewayHubNode(
+                isRunning = isRunning,
+                port = state.port,
+                gold = gold,
+                goldEnd = goldEnd,
+            )
+
+            FlowConnector(
+                active = hasTraffic,
+                phase = flowPhase,
+                color = activeLineColor,
+                dotColor = goldEnd,
+                modifier = Modifier
+                    .weight(0.35f)
+                    .height(24.dp),
+            )
+
+            // 右侧节点：最新路由目标
+            val targetProvider = latestCall?.providerId?.uppercase() ?: "UPSTREAM"
+            val targetModel = latestCall?.model?.ifEmpty { null } ?: "—"
+            TopologyNode(
+                title = targetProvider,
+                subtitle = targetModel,
+                modifier = Modifier.weight(1f),
+                alignStart = false,
+            )
+        }
+
+        // 分段进度条：各供应商可用账号占比（平滑动画过渡）
+        ProviderAccountDistributionBar(state)
+    }
+}
+
+/**
+ * 网关中枢节点：运行中时金色描边 + 微发光晕，停止时置灰。
+ */
+@Composable
+private fun GatewayHubNode(isRunning: Boolean, port: Int, gold: Color, goldEnd: Color) {
+    Box(
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.medium)
+            .drawBehind {
+                if (isRunning) {
+                    drawRoundRect(
+                        color = gold.copy(alpha = 0.12f),
+                        size = size,
+                        cornerRadius = CornerRadius(10.dp.toPx()),
+                    )
+                }
+            }
+            .background(MaterialTheme.colorScheme.surface)
+            .border(
+                width = 1.dp,
+                color = if (isRunning) gold else MaterialTheme.colorScheme.outline,
+                shape = MaterialTheme.shapes.medium,
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "AI-GATEWAY",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp,
+                color = if (isRunning) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = ":$port",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = if (isRunning) goldEnd else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * 节点之间的流动连线：虚线 + 沿线移动的光点。
+ *
+ * 画的是布局分给它的那条窄缝（两端各接一个节点），所以两侧文字长短都不会被线穿过。
+ * [active] 为 false 时静止成灰虚线、不发光点，省电也不假装有流量。
+ * [phase] 单位是 px，一个循环正好等于虚线周期（段 12px + 隙 8px = 20px），循环处不会跳帧。
+ */
+@Composable
+private fun FlowConnector(
+    active: Boolean,
+    phase: Float,
+    color: Color,
+    dotColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val centerY = size.height / 2f
+        drawLine(
+            color = color,
+            start = Offset(0f, centerY),
+            end = Offset(size.width, centerY),
+            strokeWidth = 1.5.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), phase),
+        )
+        if (active) {
+            val progress = (phase / 20f).coerceIn(0f, 1f)
+            drawCircle(
+                color = dotColor,
+                radius = 2.5.dp.toPx(),
+                center = Offset(size.width * progress, centerY),
+            )
+        }
+    }
+}
+
+/** 拓扑端点标签 */
+@Composable
+private fun TopologyNode(
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    alignStart: Boolean = true,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = if (alignStart) Alignment.Start else Alignment.End,
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * 各供应商可用账号分布条：
+ * 数据源严格来自 state.accounts，按 usable 汇总展示真实占比。
+ */
+@Composable
+private fun ProviderAccountDistributionBar(state: AppUiState) {
+    val usableAccounts = remember(state.accounts) { state.accounts.filter { it.usable } }
+    val totalUsable = usableAccounts.size
+
+    val providerGroups = remember(usableAccounts) {
+        usableAccounts
+            .groupBy { it.providerId }
+            .mapValues { it.value.size }
+            .toList()
+            .sortedByDescending { it.second }
+    }
+
+    // 供应商区分色取主题（不要在页面里就地写一份，见 AppColors.providerPalette）
+    val palette = LocalAppColors.current.providerPalette
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "各供应商可用账号占比",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = if (totalUsable > 0) "$totalUsable 个可用" else "暂无可用账号",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // 分段进度条实体
+        if (totalUsable > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                providerGroups.forEachIndexed { index, (providerId, count) ->
+                    val fraction = count.toFloat() / totalUsable
+                    val animatedFraction by animateFloatAsState(
+                        targetValue = fraction,
+                        animationSpec = tween(Motion.BAR_FILL_MILLIS, easing = FastOutSlowInEasing),
+                        label = "providerBar$providerId",
+                    )
+                    val color = palette[index % palette.size]
+                    Box(
+                        modifier = Modifier
+                            .weight(animatedFraction.coerceAtLeast(0.001f))
+                            .fillMaxSize()
+                            .background(color),
+                    )
+                }
+            }
+
+            // 图例一览（按比例取前 4 个展示，避免换行臃肿）
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                providerGroups.take(4).forEachIndexed { index, (providerId, count) ->
+                    val color = palette[index % palette.size]
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+                        Text(
+                            text = "${providerId.uppercase()} ($count)",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                if (providerGroups.size > 4) {
+                    Text(
+                        text = "+${providerGroups.size - 4}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            // 无可用账号时展示占位细条
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            )
         }
     }
 }

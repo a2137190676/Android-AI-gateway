@@ -21,6 +21,22 @@ data class AppColors(
 ) {
     /** 金色文字：深金，在浅色底上比亮金更清晰。 */
     val goldText: Color get() = goldEnd
+
+    /**
+     * 供应商区分色：首位跟随自定义金，其余为固定高区分度色。
+     *
+     * 供需要「按供应商着色」的地方使用（可用账号占比条、图例等）；
+     * 按索引取用，故顺序即是稳定性的一部分，不要随手插色。
+     */
+    val providerPalette: List<Color> get() = listOf(
+        goldStart,          // 金——首位供应商
+        Color(0xFF3B82F6),  // 蓝
+        Color(0xFF10B981),  // 绿
+        Color(0xFF8B5CF6),  // 紫
+        Color(0xFFF59E0B),  // 橙
+        Color(0xFFEC4899),  // 粉
+        Color(0xFF06B6D4),  // 青
+    )
 }
 
 /** 默认黑金配色。 */
