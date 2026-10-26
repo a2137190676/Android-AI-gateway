@@ -293,14 +293,14 @@ class CodeBuddyProvider(
         val headers = billingHeaders(credential)
         val parts = ArrayList<String>()
 
-        claimGiftAndCompensation(credential, base, headers, parts)
-        adoptBuddy(credential, base, headers, parts)
-        redeemStreak(credential, base, headers, parts)
-        drawLottery(credential, base, headers, parts)
+        claimGiftAndCompensation(credential, headers, parts)
+        adoptBuddy(credential, headers, parts)
+        redeemStreak(credential, headers, parts)
+        drawLottery(credential, headers, parts)
         claimTravel(credential, base, headers, parts)
         claimTasks(credential, base, headers, parts)
         openBlindBox(credential, base, headers, parts)
-        claimSchoolSeason(credential, base, headers, parts)
+        claimSchoolSeason(credential, headers, parts)
 
         return ProviderActionResult.success(
             if (parts.isEmpty()) "成长中心没有可领取的内容" else parts.joinToString("；"),
@@ -310,7 +310,6 @@ class CodeBuddyProvider(
     /** 新手礼包与补偿：两个独立的一次性领取，各自容错。 */
     private fun claimGiftAndCompensation(
         credential: Credential,
-        base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
     ) {
@@ -336,7 +335,6 @@ class CodeBuddyProvider(
      */
     private fun adoptBuddy(
         credential: Credential,
-        base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
     ) {
@@ -368,7 +366,6 @@ class CodeBuddyProvider(
      */
     private fun redeemStreak(
         credential: Credential,
-        base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
     ) {
@@ -392,7 +389,6 @@ class CodeBuddyProvider(
     /** 抽奖：先查次数，有剩余就抽（每次全新 client_token）。 */
     private fun drawLottery(
         credential: Credential,
-        base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
     ) {
@@ -421,7 +417,6 @@ class CodeBuddyProvider(
     /** 开学季：活动在期时领任务奖、再用获得的机会抽转盘。 */
     private fun claimSchoolSeason(
         credential: Credential,
-        base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
     ) {

@@ -366,59 +366,6 @@ object OpenAiGemini {
         return if (parts.size() > 0) parts else null
     }
 
-    private fun textContent(role: String, text: String): JsonObject = JsonObject().apply {
-        addProperty("role", role)
-        add("parts", JsonArray().apply { add(JsonObject().apply { addProperty("text", text) }) })
-    }
-
-    /** assistant 的 `tool_calls` → Gemini `functionCall` parts。 */
-    private fun functionCallsOf(message: JsonObject): JsonObject? {
-        val calls = message.arrayOrNull("tool_calls") ?: return null
-        if (calls.size() == 0) return null
-        val parts = JsonArray()
-        for (element in calls) {
-            val call = element.asObjectOrNull() ?: continue
-            val function = call.objOrNull("function") ?: continue
-            val args = function.stringOrNull("arguments").orEmpty()
-            parts.add(JsonObject().apply {
-                add("functionCall", JsonObject().apply {
-                    // id 必带：工具响应靠它配对（与 CLIProxyAPI 一致）
-                    addProperty("id", call.stringOrNull("id").orEmpty())
-                    addProperty("name", function.stringOrNull("name").orEmpty())
-                    add("args", runCatching { JsonParser.parseString(args).asJsonObject }.getOrElse { JsonObject() })
-                })
-            })
-        }
-        if (parts.size() == 0) return null
-        return JsonObject().apply {
-            addProperty("role", "model")
-            add("parts", parts)
-        }
-    }
-
-    /** 工具结果 → Gemini `functionResponse` part。 */
-    private fun functionResponseOf(message: JsonObject): JsonObject? {
-        val name = message.stringOrNull("name").orEmpty()
-        val content = textOf(message).orEmpty()
-        if (name.isEmpty()) return null
-        return JsonObject().apply {
-            addProperty("role", "user")
-            add("parts", JsonArray().apply {
-                add(JsonObject().apply {
-                    add("functionResponse", JsonObject().apply {
-                        // tool_call_id 原样带回，与 functionCall.id 配对
-                        addProperty("id", message.stringOrNull("tool_call_id").orEmpty())
-                        addProperty("name", name)
-                        add("response", JsonObject().apply {
-                            // result 保持字符串不解析：解析成 JSON 对象会触发上游 400（CLIProxyAPI 同样处理）
-                            addProperty("result", content.ifEmpty { "{}" })
-                        })
-                    })
-                })
-            })
-        }
-    }
-
     private fun toGeminiTools(tools: JsonArray): JsonArray? {
         val declarations = JsonArray()
         for (element in tools) {

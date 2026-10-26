@@ -640,7 +640,11 @@ class GatewayHttpServer(
 
     // ------------------------------------------------------------------ 响应
 
-    /** 流式：逐行透传上游已转好的 OpenAI SSE，同时抽取 usage 用于记录；[onFinished] 在流结束后回调一次。 */
+    /**
+     * 流式：逐行透传上游已转好的 OpenAI SSE，同时抽取 usage 用于记录。
+     * [onFirstChunk] 在首个 `data:` 行出站时回调一次（用于标记「开始输出」等阶段），
+     * [onFinished] 在流结束后回调一次（包括客户端断开导致的关闭）。
+     */
     private fun streamResponse(
         stream: InputStream,
         call: ChatCall,

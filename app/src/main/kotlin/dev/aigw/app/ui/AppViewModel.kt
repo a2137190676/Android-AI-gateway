@@ -755,7 +755,8 @@ class AppViewModel(
 
     /**
      * 授权返回后重新应用悬浮窗：仅在网关服务运行时补显示（开关开着且未在显示）。
-     */    fun reapplyOverlayIfEnabled() {
+     */
+    fun reapplyOverlayIfEnabled() {
         if (!engine.isRunning()) return
         if (!dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store())) return
         if (dev.aigw.app.service.FloatingKeepAlive.isShowing()) return

@@ -298,7 +298,6 @@ fun StatCell(
     value: String,
     label: String,
     modifier: Modifier = Modifier,
-    highlight: Boolean = true,
     indicatorColor: Color = Color.Unspecified,
 ) {
     Column(modifier = modifier, horizontalAlignment = Alignment.Start) {

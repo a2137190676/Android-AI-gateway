@@ -13,7 +13,6 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -22,6 +21,12 @@ import androidx.compose.ui.unit.dp
 val GoldAccent = Color(0xFFD4A843)
 val GoldText = Color(0xFFB88A20)
 val HairlineBorder = Color(0xFFEAEAEA)
+
+/** 告警琥珀：客户端中断的调用记录与日志 WARN 级别共用（非错误态，区别于 error 红）。 */
+val WarningAmber = Color(0xFFC97F0A)
+
+/** 近黑深色（与浅色 scheme 的 onSurface 同值）：趋势图「输出」序列的线条/图例与色相环滑块描边等需压深的深色前景。 */
+val DeepInk = Color(0xFF0D0D0D)
 
 /** 用 [app] 的两端金构造浅色 scheme；其余语义色固定。 */
 private fun lightScheme(app: AppColors): ColorScheme = lightColorScheme(

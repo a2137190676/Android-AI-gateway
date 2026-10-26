@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import dev.aigw.app.ui.theme.WarningAmber
 import dev.aigw.core.gateway.GatewaySettings
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.CallStatus
@@ -674,7 +675,7 @@ private fun statusLabel(status: CallStatus): String = when (status) {
 
 @Composable
 private fun levelColor(level: String): Color = when (level.uppercase()) {
-    "WARN" -> Color(0xFFC97F0A)
+    "WARN" -> WarningAmber
     "ERROR" -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurface
 }
@@ -707,7 +708,7 @@ private fun LogCapacityField(current: Int, onCommit: (Int) -> Unit) {
 private fun statusColor(status: CallStatus): Color = when (status) {
     CallStatus.SUCCESS -> MaterialTheme.colorScheme.tertiary
     CallStatus.FAILED -> MaterialTheme.colorScheme.error
-    CallStatus.ABORTED -> Color(0xFFC97F0A)
+    CallStatus.ABORTED -> WarningAmber
 }
 
 private val TIME_FORMAT = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())

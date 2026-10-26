@@ -123,7 +123,10 @@ class ConcurrencyGate(
         if (globalTracked) globalInFlight.decrementAndGet()
     }
 
-    /** 当前在途数，用于状态展示。 */
+    /**
+     * 当前在途数（全局/单账号）。这只是计数器的读出口，供测试与诊断；
+     * 界面上的「在途请求」展示走 [dev.aigw.core.gateway.ActiveRequests]，不经这里。
+     */
     fun inFlightGlobal(): Int = globalInFlight.get()
     fun inFlightOf(accountKey: String): Int = accountInFlight[accountKey]?.get() ?: 0
 

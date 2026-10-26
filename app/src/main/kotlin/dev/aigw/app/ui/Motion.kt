@@ -1,6 +1,5 @@
 package dev.aigw.app.ui
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -16,18 +15,13 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -39,7 +33,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -389,48 +382,4 @@ fun Modifier.breathingDot(
                 center = center,
             )
         }
-}
-
-/**
- * 三点波浪：三个点依次起伏，用于「正在请求 / 正在加载」。
- *
- * 时序借鉴 open-claude-ui（MIT, Caho1）的思考三点波浪：1.2s 一轮、每点错开 160ms、纵向位移 6px。
- */
-@Composable
-fun TypingDots(
-    color: Color,
-    modifier: Modifier = Modifier,
-    dotSize: Dp = 4.dp,
-) {
-    val transition = rememberInfiniteTransition(label = "typingDots")
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(dotSize),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        repeat(3) { index ->
-            val lift by transition.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = keyframes {
-                        durationMillis = 1200
-                        0f at (index * 160)
-                        0.5f at (index * 160 + 300)
-                        1f at (index * 160 + 600)
-                        1f at 1200
-                    },
-                    repeatMode = RepeatMode.Restart,
-                ),
-                label = "dot$index",
-            )
-            Box(
-                Modifier
-                    .size(dotSize)
-                    .graphicsLayer { translationY = -(lift * 6f) }
-                    .clip(CircleShape)
-                    .background(color.copy(alpha = 0.45f + 0.55f * lift)),
-            )
-        }
-    }
 }

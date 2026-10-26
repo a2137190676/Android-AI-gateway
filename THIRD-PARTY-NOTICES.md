@@ -94,7 +94,7 @@
     Gentle k=380/c=18（ζ≈0.462）、HeavySnap k=1200/c=80/m=0.1（过阻尼）
   - 7 档非线性 Alpha 滚动渐隐遮罩（`Modifier.scrollFade`）：
     15/30/45/60/75/87% 采样点对应 alpha 0.051/0.149/0.302/0.502/0.702/0.851，触顶触底 2px 归零
-  - 状态动效时序：陶土呼吸灯（scale 0.86→1，3s）、思考三点波浪（1.2s，每点错开 160ms）
+  - 状态动效时序：陶土呼吸灯（scale 0.86→1，3s）
   - 思考/详情折叠曲线 `cubic-bezier(.19,1,.22,1)` 200ms（`LogsScreen.DetailBlock`）
   - Token 环形仪表做法：`strokeDasharray = 2πr`、`strokeDashoffset = circumference × (1 − ratio)`
     （`MeScreen.CacheHitGauge`）

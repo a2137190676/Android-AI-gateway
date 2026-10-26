@@ -390,7 +390,6 @@ private fun MainTabs(
             Tab.Home -> HomeScreen(
                 state = state,
                 viewModel = viewModel,
-                openProviders = { onTab(Tab.Providers) },
                 openTaskCenter = { onSubPage(SubPage.TaskCenter) },
             )
             Tab.Providers -> ProviderListScreen(

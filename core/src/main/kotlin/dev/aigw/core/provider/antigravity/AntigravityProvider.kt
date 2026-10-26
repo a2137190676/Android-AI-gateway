@@ -867,7 +867,6 @@ class AntigravityProvider(
         for (groupElement in groups.asJsonArray) {
             val group = groupElement.takeIf { it.isJsonObject }?.asJsonObject ?: continue
             val groupName = group.get("displayName")?.asString?.takeIf { it.isNotEmpty() } ?: "Models"
-            val groupIsModelOnly = modelScopeOf(groupName) != null
             val buckets = group.get("buckets")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
             for (bucketElement in buckets.asJsonArray) {
                 val bucket = bucketElement.takeIf { it.isJsonObject }?.asJsonObject ?: continue

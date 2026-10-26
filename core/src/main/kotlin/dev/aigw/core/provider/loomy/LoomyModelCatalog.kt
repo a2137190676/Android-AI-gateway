@@ -117,10 +117,3 @@ class LoomyModelCatalog(
         return result
     }
 }
-
-/** 供界面展示的目录视图。 */
-data class ModelCatalogView(
-    val models: List<LoomyModel>,
-    val fromFallback: Boolean,
-    val error: String,
-)

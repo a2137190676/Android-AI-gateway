@@ -49,9 +49,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -75,7 +72,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.app.ui.theme.LocalAppColors
+import dev.aigw.app.ui.theme.WarningAmber
 import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.CallStatus
@@ -93,7 +92,6 @@ private const val TREND_DAYS = 14
 fun HomeScreen(
     state: AppUiState,
     viewModel: AppViewModel,
-    openProviders: () -> Unit,
     openTaskCenter: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -709,7 +707,7 @@ private fun RecentCallRoutingFlow(call: CallRecord?) {
         val resultColor = when (call.status) {
             CallStatus.SUCCESS -> MaterialTheme.colorScheme.tertiary
             CallStatus.FAILED -> MaterialTheme.colorScheme.error
-            CallStatus.ABORTED -> Color(0xFFC97F0A)
+            CallStatus.ABORTED -> WarningAmber
         }
         val resultText = when (call.status) {
             CallStatus.SUCCESS -> "成功"
@@ -719,7 +717,8 @@ private fun RecentCallRoutingFlow(call: CallRecord?) {
 
         val modelName = call.model.ifEmpty { "未记录" }
         val accountDisplay = call.accountNickname.ifEmpty { call.accountUid.ifEmpty { "默认账号" } }
-        val durationSec = String.format(Locale.US, "%.1fs", call.durationMillis / 1000.0)
+        // 统一走 formatDuration：不足 1s 时显示 850ms（原手写固定为 0.8s，此处有意统一口径）。
+        val durationText = formatDuration(call.durationMillis)
 
         // 行 1：客户端请求
         RoutingFlowRow(
@@ -739,7 +738,7 @@ private fun RecentCallRoutingFlow(call: CallRecord?) {
         RoutingFlowRow(
             dotColor = resultColor,
             label = "结果",
-            detail = "$resultText · HTTP ${call.httpStatus} · 耗时 $durationSec · tokens ${call.promptTokens}→${call.completionTokens}",
+            detail = "$resultText · HTTP ${call.httpStatus} · 耗时 $durationText · tokens ${call.promptTokens}→${call.completionTokens}",
         )
     }
 }
@@ -1131,7 +1130,7 @@ private fun TrendCard(state: AppUiState) {
         trend.size >= 2 && trend.any { it.promptTokens > 0 || it.completionTokens > 0 }
     }
     val gold = LocalAppColors.current.goldStart
-    SectionCard(modifier = Modifier.staggeredAppear(2)) {
+    SectionCard(modifier = Modifier.staggeredAppear(3)) {
         SectionHeader("消耗趋势 · TREND", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
         if (drawable) {
             TrendChart(trend, startOfDay(System.currentTimeMillis()))
@@ -1140,7 +1139,7 @@ private fun TrendCard(state: AppUiState) {
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 LegendDot(gold, "输入")
-                LegendDot(Color(0xFF0D0D0D), "输出")
+                LegendDot(DeepInk, "输出")
             }
         } else {
             Text(
@@ -1167,7 +1166,6 @@ private fun LegendDot(color: Color, text: String) {
 @Composable
 private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
     val gold = LocalAppColors.current.goldStart
-    val dark = Color(0xFF0D0D0D)
     val gridColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val n = daily.size
@@ -1206,7 +1204,7 @@ private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
 
         drawLine(gridColor, Offset(gutterLeft, originY), Offset(gutterLeft + chartWidth, originY), strokeWidth = 1f)
         drawSeries(xs, inY, originY, gold)
-        drawSeries(xs, outY, originY, dark)
+        drawSeries(xs, outY, originY, DeepInk)
 
         drawIntoCanvas { canvas ->
             axisPaint.isAntiAlias = true
