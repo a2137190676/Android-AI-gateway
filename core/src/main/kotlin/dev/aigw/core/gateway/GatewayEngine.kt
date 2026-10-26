@@ -686,6 +686,33 @@ class GatewayEngine(
     }
 
     /**
+     * 修正历史遗留的账号标识（uid 口径变过时自愈）。启动后调用一次，幂等。
+     *
+     * 逐账号问 provider 是否需要迁移（[Provider.migrateAccount]）：uid 变了就按新 key 重新登记、
+     * 删掉旧条目，凭证与账号状态（启用开关、额度）一并跟着走。provider 未实现迁移时直接跳过。
+     *
+     * @return 实际迁移的账号数。
+     */
+    fun migrateAccounts(): Int {
+        var moved = 0
+        for (account in pool.accounts()) {
+            val provider = registry.get(account.providerId) ?: continue
+            val migrated = try {
+                provider.migrateAccount(account)
+            } catch (e: Exception) {
+                logWarn("账号标识迁移失败（${account.providerId}/${account.uid}）：${e.message}")
+                null
+            } ?: continue
+            if (migrated.uid == account.uid) continue
+            if (pool.renameAccount(account.providerId, account.uid, migrated)) {
+                onLog("账号标识已迁移：${account.providerId}/${account.uid} → ${migrated.uid}")
+                moved++
+            }
+        }
+        return moved
+    }
+
+    /**
      * 取某账号的成长任务明细（会打上游，调用方自行控制频率）。
      *
      * 只读快照，供任务中心展示「哪些任务做了、哪些没做」；不支持任务中心的供应商返回 null。

@@ -212,6 +212,29 @@ class AccountPool(
         persistAccount(account)
     }
 
+    /**
+     * 迁移账号标识：把 [oldUid] 的条目换成 [newAccount]（uid 变了，凭证与状态跟着走）。
+     *
+     * 用在 uid 口径变更后的自愈（如小浣熊曾把 JWT 的 iss 当 uid 导致多账号共用一个 key）。
+     * 先登记新 key 再删旧 key：中途失败也不会把账号弄丢，最坏是两条并存，用户可手动删。
+     *
+     * @return true 表示真的搬了 key。
+     */
+    fun renameAccount(providerId: String, oldUid: String, newAccount: ProviderAccount): Boolean {
+        if (oldUid == newAccount.uid) {
+            upsert(newAccount)
+            return false
+        }
+        val before = status(providerId, oldUid)
+        upsert(newAccount)
+        if (before != null) {
+            if (!before.enabled) setEnabled(providerId, newAccount.uid, false, before.reason)
+            if (before.creditsKnown) updateCredits(providerId, newAccount.uid, before.credits, true, before.detail)
+        }
+        remove(providerId, oldUid)
+        return true
+    }
+
     // ---------------------------------------------------------------- 选号
 
     /** 取该 provider 可用账号中余额最高者；[exclude] 用于同一请求内的换号重试。 */

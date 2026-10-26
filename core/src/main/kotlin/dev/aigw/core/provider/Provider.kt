@@ -110,6 +110,15 @@ interface Provider {
     /** 预刷新凭证；返回新账号表示 token 发生轮换（调用方需原子写回）。 */
     fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? = null
 
+    /**
+     * 修正历史遗留的账号标识（uid 口径变过时自愈）；null 表示无需迁移。
+     *
+     * 引擎启动后会给每个账号问一次：返回的账号若 uid 变了，就按新 uid 重新登记、删掉旧条目，
+     * 凭证与账号状态都保留。实现方只在**能确定**旧值确实是旧口径产物时才返回，拿不准就返回 null——
+     * 宁可留一条等用户手动处理的旧账号，也不去动用户的凭证。
+     */
+    fun migrateAccount(account: ProviderAccount): ProviderAccount? = null
+
     /** 统一错误分类，供调度层决定重试与换号策略。 */
     fun classify(status: Int, body: String): UpstreamError
 

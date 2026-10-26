@@ -312,6 +312,22 @@ class RaccoonProvider(
 
     // ------------------------------------------------------------------ 网页登录
 
+    /**
+     * 修历史遗留的 uid：早期版本把 JWT 的 `iss`（签发方，同站点所有用户同一个值）当成了用户 id，
+     * 于是所有小浣熊账号在池里共用一个 key，后登录的覆盖前一个。
+     *
+     * 只在**能确定**旧 uid 就是那个 iss、且能从 JWT 算出真实用户标识时才返回新账号；
+     * 拿不准一律返回 null，交给用户手动处理，不猜。
+     */
+    override fun migrateAccount(account: ProviderAccount): ProviderAccount? {
+        val credential = parse(account) ?: return null
+        val issuer = jwtClaim(credential.accessToken, "iss")
+        if (issuer.isEmpty() || account.uid != issuer) return null
+        val userId = jwtClaim(credential.accessToken, "user_id", "userId", "uid", "sub")
+        if (userId.isEmpty() || userId == issuer) return null
+        return toProviderAccount(credential.copy(userId = userId), existingUid = userId)
+    }
+
     override fun beginWebLogin(callbackUrl: String, region: String): WebLoginTicket {
         // 不要带 login_source=desktop：授权页会走 `office-raccoon://auth/callback` 自定义 scheme 分支
         // （手机上没有 App 能接），反而不回 redirect。不传时授权页才把 `?authorization_code=…` 回推到 callbackUrl。

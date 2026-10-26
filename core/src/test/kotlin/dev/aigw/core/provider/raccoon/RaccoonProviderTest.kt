@@ -529,6 +529,29 @@ class RaccoonProviderTest {
         }
     }
 
+    @Test
+    fun `账号标识迁移只纠正 uid 等于 issuer 的旧账号`() {
+        val iss = "https://xiaohuanxiong.com"
+        val token = fakeJwt("iss" to iss, "sub" to "user-1001")
+        val provider = RaccoonProvider()
+        val legacy = ProviderAccount(
+            providerId = RaccoonProvider.ID,
+            uid = iss,
+            nickname = "旧账号",
+            secret = """{"accessToken":"$token","refreshToken":"r","expiresAt":0,"userId":"$iss","nickname":"旧账号"}""",
+        )
+        val migrated = assertNotNull(provider.migrateAccount(legacy), "uid 就是 issuer 时应迁移")
+        assertEquals("user-1001", migrated.uid)
+        // secret 里的脏 userId 也要一并改过来，否则 refresh 时又会算回旧值
+        assertEquals(
+            "user-1001",
+            JsonParser.parseString(migrated.secret).asJsonObject.get("userId").asString,
+        )
+        // uid 不是 issuer 的账号不该被动
+        val healthy = ProviderAccount(RaccoonProvider.ID, "user-1001", "新", legacy.secret)
+        assertNull(provider.migrateAccount(healthy))
+    }
+
     /** 假上游：登录换 token 按 authorization_code 区分用户，user_info 回固定体。 */
     private fun withLoginUpstream(
         tokensByCode: Map<String, String>,
