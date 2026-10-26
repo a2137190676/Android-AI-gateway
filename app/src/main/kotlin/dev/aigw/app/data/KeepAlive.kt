@@ -31,12 +31,26 @@ data class KeepAliveStatus(
 /** 可选的悬浮窗保活开关（加密存储，服务与界面共读）。 */
 object KeepAlivePrefs {
     private const val KEY_OVERLAY = "keepalive/overlay"
+    private const val KEY_LIVE_NOTIFICATION = "keepalive/live_notification"
 
     fun overlayEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
         store.read(KEY_OVERLAY) == "1"
 
     fun setOverlayEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
         store.write(KEY_OVERLAY, if (enabled) "1" else "0")
+    }
+
+    /**
+     * 实时状态通知（Android 16 Live Updates）开关：默认**开启**。
+     *
+     * 与 [overlayEnabled] 的默认相反：那条通知只在有请求在途时出现，打扰极小，
+     * 所以键缺失（从未设过）时视为开启；只有用户显式写过 "0" 才是关闭。
+     */
+    fun liveNotificationEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_LIVE_NOTIFICATION) != "0"
+
+    fun setLiveNotificationEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
+        store.write(KEY_LIVE_NOTIFICATION, if (enabled) "1" else "0")
     }
 }
 

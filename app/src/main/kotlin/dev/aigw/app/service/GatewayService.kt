@@ -37,6 +37,13 @@ class GatewayService : Service() {
             engine.requestLog.info("前台服务已拉起，通知已发布")
             acquireLocks()
             applyOverlay(engine)
+            // 实时状态通知：仅在网关运行期间存在，跟随在途请求增删（onDestroy 一并注销）
+            LiveStatusNotifier.start(
+                context = this,
+                requests = engine.activeRequests,
+                enabled = dev.aigw.app.data.KeepAlivePrefs.liveNotificationEnabled(engine.store()),
+                log = { engine.requestLog.info(it) },
+            )
             // START_NOT_STICKY：进程被杀后不自重建（自重建是灰色软件检测的典型特征）。
             // 代价：系统回收后网关不会自动恢复，用户需重新打开 App 或点磁贴。
             return START_NOT_STICKY
@@ -47,6 +54,8 @@ class GatewayService : Service() {
     }
 
     override fun onDestroy() {
+        // 网关没跑就不该有「实时状态」通知
+        LiveStatusNotifier.stop()
         FloatingKeepAlive.hide(this)
         releaseLocks()
         stopForeground(STOP_FOREGROUND_REMOVE)

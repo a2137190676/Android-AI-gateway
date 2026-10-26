@@ -292,6 +292,8 @@ data class AppUiState(
     val security: dev.aigw.core.security.SecuritySettings = dev.aigw.core.security.SecuritySettings(),
     /** 可选的悬浮窗保活是否开启（需「显示在其他应用上层」权限）。 */
     val overlayKeepAlive: Boolean = false,
+    /** 实时状态通知（仅网关有请求在途时显示）是否开启，默认开。 */
+    val liveNotification: Boolean = true,
     /** 模型开放名单：只对外暴露勾选的模型。 */
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings = dev.aigw.core.gateway.ModelExposureSettings(),
     /** 故障转移与并发配置。 */
@@ -341,6 +343,7 @@ private class Snapshot(
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings,
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
+    val liveNotification: Boolean,
 )
 
 class AppViewModel(
@@ -446,6 +449,7 @@ class AppViewModel(
                     modelExposure = engine.modelExposureSettings(),
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
+                    liveNotification = dev.aigw.app.data.KeepAlivePrefs.liveNotificationEnabled(engine.store()),
                 )
             }
             _state.value = _state.value.copy(
@@ -470,6 +474,7 @@ class AppViewModel(
                 modelExposure = snapshot.modelExposure,
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
+                liveNotification = snapshot.liveNotification,
             )
         }
     }
@@ -750,12 +755,28 @@ class AppViewModel(
 
     /**
      * 授权返回后重新应用悬浮窗：仅在网关服务运行时补显示（开关开着且未在显示）。
-     */
-    fun reapplyOverlayIfEnabled() {
+     */    fun reapplyOverlayIfEnabled() {
         if (!engine.isRunning()) return
         if (!dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store())) return
         if (dev.aigw.app.service.FloatingKeepAlive.isShowing()) return
         dev.aigw.app.service.FloatingKeepAlive.show(app, "网关 ${engine.settings().port}")
+    }
+
+    /**
+     * 开关「实时状态通知」（Android 16 Live Updates）。
+     *
+     * 发布本身由前台服务按在途请求驱动，这里只负责落盘 + 把新开关值同步给通知器：
+     * 关闭时立即撤销正在显示的那条，不必等服务重启。
+     */
+    fun setLiveNotification(enabled: Boolean) {
+        _state.value = _state.value.copy(liveNotification = enabled)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                dev.aigw.app.data.KeepAlivePrefs.setLiveNotificationEnabled(engine.store(), enabled)
+            }
+            dev.aigw.app.service.LiveStatusNotifier.setEnabled(app, enabled)
+            notice(if (enabled) "实时状态通知已开启" else "实时状态通知已关闭")
+        }
     }
 
     /** 重新加载反审核脱敏处理链。 */

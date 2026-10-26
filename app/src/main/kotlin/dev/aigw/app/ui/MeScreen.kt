@@ -141,6 +141,13 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 "通知、电池优化与后台限制",
                 if (state.keepAlive?.allGood == true) "就绪" else "待配置",
             ) { open(SubPage.KeepAlive) }
+            EditorialSwitchRow(
+                index = "02.8",
+                title = "实时状态 · LIVE STATUS",
+                subtitle = "仅网关有请求时显示，点击回到 App",
+                checked = state.liveNotification,
+                onCheckedChange = { viewModel.setLiveNotification(it) },
+            )
         }
 
         EditorialGroupHeader("03", "架构关于 · ABOUT THE ENGINE")
