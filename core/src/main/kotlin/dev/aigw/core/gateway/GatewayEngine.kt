@@ -192,6 +192,9 @@ class GatewayEngine(
     val sanitizer = dev.aigw.core.security.RequestSanitizer(nowMillis)
     val rateLimiter = dev.aigw.core.security.AccountRateLimiter(nowMillis)
 
+    /** 在途请求表（仅供状态展示：通知/界面）；不参与调度，见 [ActiveRequests]。 */
+    val activeRequests = ActiveRequests(nowMillis)
+
     @Volatile
     private var failoverSettings: dev.aigw.core.failover.ModelFailoverSettings =
         dev.aigw.core.failover.ModelFailoverSettings.fromJson(store.read(dev.aigw.core.failover.ModelFailoverSettings.STORE_KEY))

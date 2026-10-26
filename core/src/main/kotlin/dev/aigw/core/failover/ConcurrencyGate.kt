@@ -82,10 +82,12 @@ class ConcurrencyGate(
             while (true) {
                 if (globalLimit <= 0 || tryIncrement(globalInFlight, globalLimit)) {
                     globalAcquired = globalLimit > 0
-                    if (accountLimit <= 0) return Handle(this, accountKey, false)
+                    // 句柄要记住「本轮到底有没有真的加过全局计数」：maxGlobal<=0（全局不限）时
+                    // 不能减，否则把从没加过的计数减成负数。
+                    if (accountLimit <= 0) return Handle(this, accountKey, false, globalAcquired)
                     val counter = accountInFlight.computeIfAbsent(accountKey) { AtomicInteger(0) }
                     while (true) {
-                        if (tryIncrement(counter, accountLimit)) return Handle(this, accountKey, true)
+                        if (tryIncrement(counter, accountLimit)) return Handle(this, accountKey, true, globalAcquired)
                         if (System.nanoTime() >= deadline) {
                             if (globalAcquired) globalInFlight.decrementAndGet()
                             return null
@@ -110,14 +112,15 @@ class ConcurrencyGate(
         }
     }
 
-    private fun doRelease(accountKey: String, accountTracked: Boolean) {
+    private fun doRelease(accountKey: String, accountTracked: Boolean, globalTracked: Boolean) {
         if (accountTracked) {
             // 只递减不摘除条目：归零后摘除会与新请求 computeIfAbsent 拿到的旧引用竞争，
             // 新请求可能 CAS 成功一个「已脱离 Map 的计数器」，随后另一请求又新建条目从 0 起步，
             // 同账号在途数瞬时超发。空 AtomicInteger 的内存占用可忽略，正确性优先。
             accountInFlight[accountKey]?.decrementAndGet()
         }
-        globalInFlight.decrementAndGet()
+        // 只在获取时真的加过全局计数时才递减，否则会减成负数（等效放大上限）
+        if (globalTracked) globalInFlight.decrementAndGet()
     }
 
     /** 当前在途数，用于状态展示。 */
@@ -129,6 +132,8 @@ class ConcurrencyGate(
         private val gate: ConcurrencyGate?,
         private val accountKey: String,
         private val accountTracked: Boolean,
+        /** 获取时是否真的占用了全局计数（maxGlobal<=0 时为 false，release 不得递减）。 */
+        private val globalTracked: Boolean,
     ) {
         private val released = AtomicBoolean(false)
 
@@ -136,13 +141,13 @@ class ConcurrencyGate(
         fun release(): Boolean {
             val g = gate ?: return false
             if (!released.compareAndSet(false, true)) return false
-            g.doRelease(accountKey, accountTracked)
+            g.doRelease(accountKey, accountTracked, globalTracked)
             return true
         }
 
         companion object {
             /** 闸门未启用时的空句柄：release 是无操作。 */
-            internal val DISABLED = Handle(null, "", false)
+            internal val DISABLED = Handle(null, "", false, false)
         }
     }
 

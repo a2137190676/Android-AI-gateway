@@ -224,6 +224,16 @@ class GatewayHttpServer(
         // 循环级许可兜底：异常沿着存盘/日志等调用逃逸出循环时（如加密存储写失败），
         // 各分支的显式 release 来不及执行；Handle.release 幂等，这里重复释放无副作用。
         var pendingGate: dev.aigw.core.failover.ConcurrencyGate.Handle? = null
+
+        // 在途请求打点（仅状态展示）：每次上游尝试算一笔，id 记在 activeRequestId，
+        // 由 finishActiveRequest 在任意退出路径收尾；置空后重复调用无副作用（幂等）。
+        var activeRequestId: String? = null
+        fun finishActiveRequest() {
+            val id = activeRequestId ?: return
+            activeRequestId = null
+            engine.activeRequests.finish(id)
+        }
+
         try {
         while (true) {
             val providerId = currentRoute.providerId
@@ -278,6 +288,8 @@ class GatewayHttpServer(
 
             while (attempt < maxAttempts) {
                 attempt++
+                // 兜底：上一笔上游尝试若在 continue 路径未显式收尾，这里先结束掉
+                finishActiveRequest()
                 var picked = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region)
                 if (picked == null) {
                     // 若池中有可用账号（如单账号或全部账号已轮过一轮），清空已试列表允许继续完成剩余重试配额
@@ -348,6 +360,15 @@ class GatewayHttpServer(
                     log("账号限速生效（${currentRoute.providerId}/${account.nickname}）：节拍对齐等待 ${waitedMs}ms")
                 }
 
+                // 在途请求打点：账号已选定、即将向上游发请求；换号重试/跳家各算一笔，不复用 id
+                val activeId = engine.activeRequests.begin(
+                    requestedModel,
+                    currentRoute.providerId,
+                    account.uid,
+                    account.nickname,
+                )
+                activeRequestId = activeId
+
                 val attemptStart = System.currentTimeMillis()
                 attemptedUpstream = true
                 val call: ChatCall = try {
@@ -359,6 +380,7 @@ class GatewayHttpServer(
                     cb.recordFailure()
                     pMetrics.record(false, elapsed, "connect_exception")
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", "openChat 异常：$providerLastError")
+                    finishActiveRequest()
                     gateHandle.release()
                     continue
                 }
@@ -367,6 +389,7 @@ class GatewayHttpServer(
                 if (engine.verboseLogging()) {
                     log("上游已应答（${currentRoute.providerId}）：${System.currentTimeMillis() - attemptStart}ms")
                 }
+                engine.activeRequests.update(activeId, ActiveRequest.Phase.UPSTREAM_ANSWERED)
 
                 // 流内业务错误（如 Loomy 的 HTTP 200 + 业务码）
                 val failure = call.failure
@@ -383,6 +406,7 @@ class GatewayHttpServer(
                             newCompletionId(), currentRoute.providerId, requestedModel, account.uid, account.nickname,
                             streaming, CallStatus.FAILED, call.status, null, 0L, failure.message, call.errorBody, body, startedAt,
                         )
+                        finishActiveRequest()
                         gateHandle.release()
                         return errorResponse(400, "upstream_rejected", failure.message)
                     }
@@ -391,6 +415,7 @@ class GatewayHttpServer(
                         log("凭证失效，已禁用账号（${currentRoute.providerId}/${account.nickname}）：${failure.message}")
                         // 凭证失效是账号级问题，不代表供应商故障，不计入熔断
                         providerLastError = failure.message
+                        finishActiveRequest()
                         gateHandle.release()
                         break
                     }
@@ -402,6 +427,7 @@ class GatewayHttpServer(
                         log("模型级不可用，冷却 $cooldownMs ms（${currentRoute.providerId}/$resolvedModel）：${failure.message}")
                         providerLastError = failure.message
                         lastHttpStatus = call.status
+                        finishActiveRequest()
                         gateHandle.release()
                         break
                     }
@@ -410,6 +436,7 @@ class GatewayHttpServer(
                     pMetrics.record(false, elapsed, failure.kind.name)
                     providerLastError = failure.message
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", call.errorBody)
+                    finishActiveRequest()
                     gateHandle.release()
                     continue
                 }
@@ -423,6 +450,7 @@ class GatewayHttpServer(
                     pMetrics.record(false, elapsed, "network_status_0")
                     providerLastError = err
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", err)
+                    finishActiveRequest()
                     gateHandle.release()
                     continue
                 }
@@ -453,6 +481,7 @@ class GatewayHttpServer(
                             newCompletionId(), currentRoute.providerId, requestedModel, account.uid, account.nickname,
                             streaming, CallStatus.FAILED, call.status, null, 0L, error.message, call.errorBody, body, startedAt,
                         )
+                        finishActiveRequest()
                         gateHandle.release()
                         return errorResponse(400, "upstream_rejected", error.message)
                     }
@@ -464,6 +493,7 @@ class GatewayHttpServer(
                         }
                         providerLastError = error.message
                         // 不可恢复错误：直接退出当前供应商重试，迅速切换下一家候选
+                        finishActiveRequest()
                         gateHandle.release()
                         break
                     }
@@ -476,6 +506,7 @@ class GatewayHttpServer(
                         log("模型级不可用，冷却 $cooldownMs ms（${currentRoute.providerId}/$resolvedModel）：${error.message}")
                         providerLastError = error.message
                         lastHttpStatus = call.status
+                        finishActiveRequest()
                         gateHandle.release()
                         break
                     }
@@ -485,6 +516,7 @@ class GatewayHttpServer(
                     pMetrics.record(false, elapsed, "http_${call.status}")
                     providerLastError = error.message
                     lastHttpStatus = call.status
+                    finishActiveRequest()
                     gateHandle.release()
                     continue
                 }
@@ -499,6 +531,7 @@ class GatewayHttpServer(
                     log("${currentRoute.providerId} 返回了零内容回复，已尝试其他账号或供应商")
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", aggregated)
                     providerLastError = "上游返回了空回复"
+                    finishActiveRequest()
                     gateHandle.release()
                     continue
                 }
@@ -511,7 +544,8 @@ class GatewayHttpServer(
 
                 if (streaming && aggregated != null) {
                     val sse = OpenAiSseAggregator.completionAsSse(aggregated).byteInputStream(Charsets.UTF_8)
-                    // 非流式包 SSE：上游响应已读入内存，许可在这里释放即可
+                    // 非流式包 SSE：上游响应已读入内存，许可与在途打点在这里一起收尾
+                    finishActiveRequest()
                     gateHandle.release()
                     return streamResponse(sse, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status)
                 }
@@ -524,13 +558,24 @@ class GatewayHttpServer(
                         cb.recordFailure()
                         pMetrics.record(false, elapsed, "stream_null")
                         providerLastError = "上游未返回流"
+                        finishActiveRequest()
                         gateHandle.release()
                         continue
                     }
                     // 流式透传：在途许可要覆盖整个读流转发阶段，所有权交给 onClosed（流结束后释放），
                     // 先清空 pendingGate 以免循环级 finally 在 return 时提前释放。
                     pendingGate = null
-                    return streamResponse(stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status, onFinished = { gateHandle.release() })
+                    // 在途打点的所有权同样交给这条流：首字出站时转 STREAMING，流真正结束时收尾；
+                    // 置空 activeRequestId 以免循环级 finally 提前结束它。
+                    activeRequestId = null
+                    return streamResponse(
+                        stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status,
+                        onFirstChunk = { engine.activeRequests.update(activeId, ActiveRequest.Phase.STREAMING) },
+                        onFinished = {
+                            gateHandle.release()
+                            engine.activeRequests.finish(activeId)
+                        },
+                    )
                 }
 
                 if (aggregated != null) {
@@ -538,12 +583,14 @@ class GatewayHttpServer(
                         log("上游返回 2xx（$providerId/${account.nickname}，非流式）")
                         engine.logVerbose("返回原文", aggregated)
                     }
+                    finishActiveRequest()
                     gateHandle.release()
                     return aggregatedResponse(aggregated, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status)
                 }
 
                 call.close()
                 providerLastError = "上游返回的内容为空"
+                finishActiveRequest()
                 gateHandle.release()
                 continue
             }
@@ -568,6 +615,8 @@ class GatewayHttpServer(
         }
         } finally {
             pendingGate?.release()
+            // 异常逃逸出循环（如存盘/日志抛错）时兜底收尾，避免在途请求残留
+            finishActiveRequest()
         }
 
         val allErrors = routeErrors.joinToString("；")
@@ -602,6 +651,7 @@ class GatewayHttpServer(
         startedAt: Long,
         requestBody: String,
         httpStatus: Int,
+        onFirstChunk: () -> Unit = {},
         onFinished: () -> Unit = {},
     ): NanoHTTPD.Response {
         val id = newCompletionId()
@@ -671,6 +721,7 @@ class GatewayHttpServer(
                         if (!firstChunkLogged && line.startsWith("data:")) {
                             firstChunkLogged = true
                             log("首字出站（$providerId/$model）：${System.currentTimeMillis() - startedAt}ms")
+                            onFirstChunk()
                         }
                         val chunk = runCatching { parseChunk(line) }.getOrNull() ?: continue
                         chunk.usage?.let { usage = it }
