@@ -3,6 +3,7 @@ package dev.aigw.core.provider.loomy
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.provider.AggregatedChatCall
+import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
 import dev.aigw.core.provider.CreditInfo
@@ -239,7 +240,10 @@ class LoomyProvider(
                     }
                 }
 
-                ACTION_COMPLETE_ALL_TASKS -> {
+                // 认通用动作名 ACTION_TASKS：UI 的「一键完成新手任务」与批量任务传的都是它。
+                // 从前只认私有的 complete_all_tasks，于是两者都落到 unsupported，
+                // 用户看到「该供应商不支持「tasks」」。
+                ACTION_TASKS -> {
                     val pending = taskClient.tasks(loomy.session).tasks.filter { !it.completed }
                     if (pending.isEmpty()) return ProviderActionResult.success("所有任务都已完成")
                     val lines = pending.map { task ->
@@ -311,7 +315,6 @@ class LoomyProvider(
         const val ACTION_REDEEM_INVITE = "redeem_invite"
         const val ACTION_REDEEM_CODE = "redeem_code"
         const val ACTION_COMPLETE_TASK = "complete_task"
-        const val ACTION_COMPLETE_ALL_TASKS = "complete_all_tasks"
 
         /** 中国大陆手机号：11 位、1 开头。 */
         private val CN_PHONE = Regex("1[3-9]\\d{9}")
