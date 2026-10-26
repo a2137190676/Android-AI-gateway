@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -293,40 +295,117 @@ private fun ConsoleCard(
     }
 }
 
+// ---------------------------------------------------------------------- 拓扑结构数据模型
+private data class TopologyProviderBranch(
+    val providerId: String,
+    val displayName: String,
+    val usableAccounts: Int,
+    val totalAccounts: Int,
+    val weight: Float,
+    val hasActiveRequest: Boolean,
+    val activeCount: Int,
+    val colorIndex: Int,
+)
+
 /**
- * 实时调度拓扑卡：
- * 1. 标题旁呼吸指示灯（运行中呼吸发光，停止时静止置灰）
- * 2. 拓扑节点（客户端 → 网关中枢 → 上游账号）及流动虚线与光点
- * 3. 网关中枢卡片金色描边与微发光晕
- * 4. 可用账号各供应商分段彩色进度条（平滑过渡，严格说明真实含义）
- * 5. 动态大号指标数字（实时请求数翻滚跳变）
+ * 实时调度拓扑卡（数据驱动的供应商分发视图）：
+ * - 中枢节点：网关（显示 :port，运行中呼吸发光，停止时静止置灰）
+ * - 分支节点：真实有账号的供应商，显示供应商名 + 可用账号数
+ * - 分支权重（线宽/流动/亮度）：按最近 50 次请求里该供应商的请求数占比；无请求时退化为可用账号数占比
+ * - 在途请求：所在供应商高亮金色并流动光斑，没有在途时不流动、不高亮
+ * - 多分支折叠：超过 4 个供应商时前 3 个展示，其余合并为「+N 其它」
+ * - 小屏（360dp）：自适应单列/紧凑布局
  */
 @Composable
 private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modifier) {
     val gold = LocalAppColors.current.goldStart
     val goldEnd = LocalAppColors.current.goldEnd
+    val palette = LocalAppColors.current.providerPalette
     val isRunning = state.running
-    val latestCall = state.calls.firstOrNull()
-    val hasTraffic = isRunning && latestCall != null
 
-    // 虚线与流动光斑进度：有活跃请求且网关运行时循环流动，否则静止以极致省电
-    val flowPhase = if (hasTraffic) {
-        val transition = rememberInfiniteTransition(label = "topologyFlow")
+    val recentCalls = remember(state.calls) { state.calls.take(50) }
+    val activeRequests = state.activeRequests
+    val hasActive = isRunning && activeRequests.isNotEmpty()
+
+    // 统计最近 50 次请求中各供应商的请求数
+    val callCountsByProvider = remember(recentCalls) {
+        recentCalls.groupBy { it.providerId.lowercase() }.mapValues { it.value.size }
+    }
+    val totalRecentCalls = remember(callCountsByProvider) { callCountsByProvider.values.sum() }
+
+    // 活跃在途请求按供应商分组统计
+    val activeCountsByProvider = remember(activeRequests) {
+        activeRequests.groupBy { it.providerId.lowercase() }.mapValues { it.value.size }
+    }
+
+    // 真实有账号的供应商
+    val branches = remember(state.accounts, state.providers, callCountsByProvider, activeCountsByProvider, totalRecentCalls) {
+        val groupedAccounts = state.accounts.groupBy { it.providerId.lowercase() }
+        if (groupedAccounts.isEmpty()) {
+            emptyList()
+        } else {
+            val totalUsableOverall = state.accounts.count { it.usable }.coerceAtLeast(1)
+            val sortedProviderIds = groupedAccounts.keys.sortedByDescending { pid ->
+                val callCount = callCountsByProvider[pid] ?: 0
+                val usable = groupedAccounts[pid]?.count { it.usable } ?: 0
+                // 优先按请求数排序，相同时按可用账号数
+                (callCount.toLong() shl 16) + usable
+            }
+
+            sortedProviderIds.mapIndexed { index, pid ->
+                val accs = groupedAccounts[pid] ?: emptyList()
+                val usable = accs.count { it.usable }
+                val provInfo = state.providers.firstOrNull { it.id.equals(pid, ignoreCase = true) }
+                val dName = provInfo?.displayName?.ifEmpty { pid.uppercase() } ?: pid.uppercase()
+
+                val weight = if (totalRecentCalls > 0) {
+                    ((callCountsByProvider[pid] ?: 0).toFloat() / totalRecentCalls).coerceIn(0.08f, 1f)
+                } else {
+                    (usable.toFloat() / totalUsableOverall).coerceIn(0.08f, 1f)
+                }
+
+                val activeCount = activeCountsByProvider[pid] ?: 0
+
+                TopologyProviderBranch(
+                    providerId = pid,
+                    displayName = dName,
+                    usableAccounts = usable,
+                    totalAccounts = accs.size,
+                    weight = weight,
+                    hasActiveRequest = activeCount > 0,
+                    activeCount = activeCount,
+                    colorIndex = index,
+                )
+            }
+        }
+    }
+
+    val basisCaption = if (totalRecentCalls > 0) {
+        "按近 50 次请求分布"
+    } else if (state.accounts.isNotEmpty()) {
+        "暂无请求，按可用账号分布"
+    } else {
+        "暂无配置账号"
+    }
+
+    // 在途流光动效：仅在网关运行且有在途请求时循环播放
+    val flowPhase = if (hasActive) {
+        val transition = rememberInfiniteTransition(label = "topologyActiveFlow")
         transition.animateFloat(
             initialValue = 0f,
             targetValue = 20f,
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1200, easing = LinearEasing),
+                animation = tween(durationMillis = 1000, easing = LinearEasing),
                 repeatMode = RepeatMode.Restart,
             ),
-            label = "flowPhase",
+            label = "activeFlowPhase",
         ).value
     } else {
         0f
     }
 
     SectionCard(modifier = modifier) {
-        // 顶部小节头 + 呼吸指示灯
+        // 顶部小节头 + 呼吸指示灯 + TODAY 大数字
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -340,107 +419,169 @@ private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modi
                     haloSize = 15.dp,
                 ),
             )
-            Text(
-                text = "实时调度拓扑 · LIVE TOPOLOGY",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 1.2.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            // 右侧今日请求大数字，跳变动效
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "实时调度拓扑 · LIVE TOPOLOGY",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.2.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = basisCaption,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                )
+            }
+
+            // 右侧在途/今日计数
             Row(
                 verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text(
-                    text = "TODAY",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 2.dp),
-                )
-                AnimatedContent(
-                    targetState = state.today.requests,
-                    transitionSpec = {
-                        slideInVertically(
-                            animationSpec = tween(Motion.TAB_MILLIS, easing = FastOutSlowInEasing),
-                        ) { it / 2 } + fadeIn() togetherWith
-                            slideOutVertically(
-                                animationSpec = tween(Motion.TAB_MILLIS, easing = FastOutSlowInEasing),
-                            ) { -it / 2 } + fadeOut()
-                    },
-                    label = "todayRequests",
-                ) { reqCount ->
+                if (activeRequests.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(gold.copy(alpha = 0.16f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = "${activeRequests.size} 在途",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            fontWeight = FontWeight.Bold,
+                            color = goldEnd,
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Text(
-                        text = if (reqCount > 0) formatCount(reqCount) else "—",
-                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-                        fontWeight = FontWeight.Bold,
-                        color = if (reqCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = "TODAY",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp),
                     )
+                    AnimatedContent(
+                        targetState = state.today.requests,
+                        transitionSpec = {
+                            slideInVertically(
+                                animationSpec = tween(Motion.TAB_MILLIS, easing = FastOutSlowInEasing),
+                            ) { it / 2 } + fadeIn() togetherWith
+                                slideOutVertically(
+                                    animationSpec = tween(Motion.TAB_MILLIS, easing = FastOutSlowInEasing),
+                                ) { -it / 2 } + fadeOut()
+                        },
+                        label = "todayRequests",
+                    ) { reqCount ->
+                        Text(
+                            text = if (reqCount > 0) formatCount(reqCount) else "—",
+                            style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                            fontWeight = FontWeight.Bold,
+                            color = if (reqCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
 
-        // 拓扑主体：三节点 + 两条「只在节点间隙里」流动的连线。
-        // 连线由布局定位在窄缝里，不按整屏比例画——否则模型名一长，线就会穿过右侧文字。
-        val lineColor = MaterialTheme.colorScheme.outlineVariant
-        val activeLineColor = if (isRunning) gold.copy(alpha = 0.85f) else lineColor
+        Spacer(Modifier.height(4.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(86.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 左侧节点：客户端
-            TopologyNode(
-                title = "CLIENT",
-                subtitle = if (isRunning) "127.0.0.1" else "STOPPED",
-                modifier = Modifier.weight(1f),
-                alignStart = true,
-            )
-
-            FlowConnector(
-                active = hasTraffic,
-                phase = flowPhase,
-                color = activeLineColor,
-                dotColor = goldEnd,
+        // 拓扑主体分发视图：
+        // 中枢网关节点位于左侧，各供应商分支位于右侧
+        if (branches.isEmpty()) {
+            Box(
                 modifier = Modifier
-                    .weight(0.35f)
-                    .height(24.dp),
-            )
+                    .fillMaxWidth()
+                    .height(68.dp)
+                    .clip(MaterialTheme.shapes.small)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "暂无可用供应商账号",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            // 分支折叠逻辑：最多显示 3 个主要分支，超过则把剩余合并为「+N」
+            val maxVisibleBranches = 3
+            val displayBranches = if (branches.size > 4) branches.take(maxVisibleBranches) else branches
+            val remainingCount = if (branches.size > 4) branches.size - maxVisibleBranches else 0
 
-            // 中间节点：网关中枢（带金色描边与微发光晕）
-            GatewayHubNode(
-                isRunning = isRunning,
-                port = state.port,
-                gold = gold,
-                goldEnd = goldEnd,
-            )
-
-            FlowConnector(
-                active = hasTraffic,
-                phase = flowPhase,
-                color = activeLineColor,
-                dotColor = goldEnd,
+            Row(
                 modifier = Modifier
-                    .weight(0.35f)
-                    .height(24.dp),
-            )
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 左侧中枢节点：网关 Hub
+                GatewayHubNode(
+                    isRunning = isRunning,
+                    port = state.port,
+                    gold = gold,
+                    goldEnd = goldEnd,
+                    hasActive = hasActive,
+                )
 
-            // 右侧节点：最新路由目标
-            val targetProvider = latestCall?.providerId?.uppercase() ?: "UPSTREAM"
-            val targetModel = latestCall?.model?.ifEmpty { null } ?: "—"
-            TopologyNode(
-                title = targetProvider,
-                subtitle = targetModel,
-                modifier = Modifier.weight(1f),
-                alignStart = false,
-            )
+                // 右侧分发分支列
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 0.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    displayBranches.forEach { branch ->
+                        val branchColor = palette[branch.colorIndex % palette.size]
+                        ProviderBranchRow(
+                            branch = branch,
+                            branchColor = branchColor,
+                            gold = gold,
+                            goldEnd = goldEnd,
+                            isRunning = isRunning,
+                            flowPhase = flowPhase,
+                        )
+                    }
+
+                    if (remainingCount > 0) {
+                        val otherUsable = branches.drop(maxVisibleBranches).sumOf { it.usableAccounts }
+                        val otherHasActive = branches.drop(maxVisibleBranches).any { it.hasActiveRequest }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            BranchConnectorCanvas(
+                                active = otherHasActive && isRunning,
+                                phase = flowPhase,
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                activeColor = gold,
+                                dotColor = goldEnd,
+                                strokeWidthDp = 1.2f,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(20.dp),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                            ) {
+                                Text(
+                                    text = "+$remainingCount 其它 (${otherUsable}可用)",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
-
-        // 分段进度条：各供应商可用账号占比（平滑动画过渡）
-        ProviderAccountDistributionBar(state)
 
         HorizontalDivider(
             color = MaterialTheme.colorScheme.outlineVariant,
@@ -461,17 +602,154 @@ private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modi
 }
 
 /**
+ * 拓扑单个分支行：连线（顶到节点边缘无空隙）+ 供应商标签胶囊
+ */
+@Composable
+private fun ProviderBranchRow(
+    branch: TopologyProviderBranch,
+    branchColor: Color,
+    gold: Color,
+    goldEnd: Color,
+    isRunning: Boolean,
+    flowPhase: Float,
+) {
+    val isBranchActive = branch.hasActiveRequest && isRunning
+    val lineStroke = (1.5f + branch.weight * 2.5f).coerceIn(1.5f, 3.5f)
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 连线：直接贴到左侧和右侧，两端贴合消除间隙
+        BranchConnectorCanvas(
+            active = isBranchActive,
+            phase = flowPhase,
+            color = if (isRunning) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+            activeColor = gold,
+            dotColor = goldEnd,
+            strokeWidthDp = lineStroke,
+            modifier = Modifier
+                .weight(1f)
+                .height(24.dp),
+        )
+
+        // 右侧供应商节点：有在途请求时金色高亮发光
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .drawBehind {
+                    if (isBranchActive) {
+                        drawRoundRect(
+                            color = gold.copy(alpha = 0.15f),
+                            size = size,
+                            cornerRadius = CornerRadius(8.dp.toPx()),
+                        )
+                    }
+                }
+                .background(MaterialTheme.colorScheme.surface)
+                .border(
+                    width = if (isBranchActive) 1.5.dp else 1.dp,
+                    color = if (isBranchActive) gold else branchColor.copy(alpha = 0.45f),
+                    shape = RoundedCornerShape(8.dp),
+                )
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(Modifier.size(6.dp).clip(CircleShape).background(branchColor))
+                Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = branch.displayName,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isBranchActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                            maxLines = 1,
+                        )
+                        if (branch.activeCount > 0) {
+                            Text(
+                                text = "(${branch.activeCount}在途)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, fontFamily = FontFamily.Monospace),
+                                color = goldEnd,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                    Text(
+                        text = "${branch.usableAccounts}/${branch.totalAccounts} 可用",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 分支连线 Canvas：连线起点是 0f（紧贴网关中枢），终点是 size.width（紧贴右侧分支节点），消除间隙
+ */
+@Composable
+private fun BranchConnectorCanvas(
+    active: Boolean,
+    phase: Float,
+    color: Color,
+    activeColor: Color,
+    dotColor: Color,
+    strokeWidthDp: Float,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val centerY = size.height / 2f
+        val strokePx = strokeWidthDp.dp.toPx()
+
+        // 底层连线（全宽，两端 0f 到 size.width 紧贴节点边界）
+        drawLine(
+            color = if (active) activeColor else color,
+            start = Offset(0f, centerY),
+            end = Offset(size.width, centerY),
+            strokeWidth = strokePx,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f), if (active) phase else 0f),
+            cap = StrokeCap.Round,
+        )
+
+        // 在途活跃时沿连线流动光斑
+        if (active) {
+            val progress = (phase / 20f).coerceIn(0f, 1f)
+            drawCircle(
+                color = dotColor,
+                radius = (strokePx + 1.5.dp.toPx()).coerceAtLeast(2.5.dp.toPx()),
+                center = Offset(size.width * progress, centerY),
+            )
+        }
+    }
+}
+
+/**
  * 网关中枢节点：运行中时金色描边 + 微发光晕，停止时置灰。
  */
 @Composable
-private fun GatewayHubNode(isRunning: Boolean, port: Int, gold: Color, goldEnd: Color) {
+private fun GatewayHubNode(
+    isRunning: Boolean,
+    port: Int,
+    gold: Color,
+    goldEnd: Color,
+    hasActive: Boolean = false,
+) {
     Box(
         modifier = Modifier
             .clip(MaterialTheme.shapes.medium)
             .drawBehind {
                 if (isRunning) {
+                    val haloAlpha = if (hasActive) 0.22f else 0.10f
                     drawRoundRect(
-                        color = gold.copy(alpha = 0.12f),
+                        color = gold.copy(alpha = haloAlpha),
                         size = size,
                         cornerRadius = CornerRadius(10.dp.toPx()),
                     )
@@ -479,197 +757,27 @@ private fun GatewayHubNode(isRunning: Boolean, port: Int, gold: Color, goldEnd: 
             }
             .background(MaterialTheme.colorScheme.surface)
             .border(
-                width = 1.dp,
+                width = if (hasActive) 1.5.dp else 1.dp,
                 color = if (isRunning) gold else MaterialTheme.colorScheme.outline,
                 shape = MaterialTheme.shapes.medium,
             )
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = "AI-GATEWAY",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.8.sp,
                 color = if (isRunning) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = ":$port",
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = if (isRunning) goldEnd else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/**
- * 节点之间的流动连线：虚线 + 沿线移动的光点。
- *
- * 画的是布局分给它的那条窄缝（两端各接一个节点），所以两侧文字长短都不会被线穿过。
- * [active] 为 false 时静止成灰虚线、不发光点，省电也不假装有流量。
- * [phase] 单位是 px，一个循环正好等于虚线周期（段 12px + 隙 8px = 20px），循环处不会跳帧。
- */
-@Composable
-private fun FlowConnector(
-    active: Boolean,
-    phase: Float,
-    color: Color,
-    dotColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    Canvas(modifier = modifier) {
-        val centerY = size.height / 2f
-        drawLine(
-            color = color,
-            start = Offset(0f, centerY),
-            end = Offset(size.width, centerY),
-            strokeWidth = 1.5.dp.toPx(),
-            pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), phase),
-        )
-        if (active) {
-            val progress = (phase / 20f).coerceIn(0f, 1f)
-            drawCircle(
-                color = dotColor,
-                radius = 2.5.dp.toPx(),
-                center = Offset(size.width * progress, centerY),
-            )
-        }
-    }
-}
-
-/** 拓扑端点标签 */
-@Composable
-private fun TopologyNode(
-    title: String,
-    subtitle: String,
-    modifier: Modifier = Modifier,
-    alignStart: Boolean = true,
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = if (alignStart) Alignment.Start else Alignment.End,
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-/**
- * 各供应商可用账号分布条：
- * 数据源严格来自 state.accounts，按 usable 汇总展示真实占比。
- */
-@Composable
-private fun ProviderAccountDistributionBar(state: AppUiState) {
-    val usableAccounts = remember(state.accounts) { state.accounts.filter { it.usable } }
-    val totalUsable = usableAccounts.size
-
-    val providerGroups = remember(usableAccounts) {
-        usableAccounts
-            .groupBy { it.providerId }
-            .mapValues { it.value.size }
-            .toList()
-            .sortedByDescending { it.second }
-    }
-
-    // 供应商区分色取主题（不要在页面里就地写一份，见 AppColors.providerPalette）
-    val palette = LocalAppColors.current.providerPalette
-
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "各供应商可用账号占比",
-                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = if (totalUsable > 0) "$totalUsable 个可用" else "暂无可用账号",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        // 分段进度条实体
-        if (totalUsable > 0) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                providerGroups.forEachIndexed { index, (providerId, count) ->
-                    val fraction = count.toFloat() / totalUsable
-                    val animatedFraction by animateFloatAsState(
-                        targetValue = fraction,
-                        animationSpec = tween(Motion.BAR_FILL_MILLIS, easing = FastOutSlowInEasing),
-                        label = "providerBar$providerId",
-                    )
-                    val color = palette[index % palette.size]
-                    Box(
-                        modifier = Modifier
-                            .weight(animatedFraction.coerceAtLeast(0.001f))
-                            .fillMaxSize()
-                            .background(color),
-                    )
-                }
-            }
-
-            // 图例一览（按比例取前 4 个展示，避免换行臃肿）
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                providerGroups.take(4).forEachIndexed { index, (providerId, count) ->
-                    val color = palette[index % palette.size]
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
-                        Text(
-                            text = "${providerId.uppercase()} ($count)",
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                }
-                if (providerGroups.size > 4) {
-                    Text(
-                        text = "+${providerGroups.size - 4}",
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        } else {
-            // 无可用账号时展示占位细条
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                fontWeight = FontWeight.SemiBold,
+                color = if (isRunning) goldEnd else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -717,8 +825,9 @@ private fun RecentCallRoutingFlow(call: CallRecord?) {
 
         val modelName = call.model.ifEmpty { "未记录" }
         val accountDisplay = call.accountNickname.ifEmpty { call.accountUid.ifEmpty { "默认账号" } }
-        // 统一走 formatDuration：不足 1s 时显示 850ms（原手写固定为 0.8s，此处有意统一口径）。
         val durationText = formatDuration(call.durationMillis)
+        val promptTokensStr = formatTokens(call.promptTokens)
+        val completionTokensStr = formatTokens(call.completionTokens)
 
         // 行 1：客户端请求
         RoutingFlowRow(
@@ -734,11 +843,18 @@ private fun RecentCallRoutingFlow(call: CallRecord?) {
             detail = "${call.providerId.uppercase()} · $accountDisplay",
         )
 
-        // 行 3：结果与开销
+        // 行 3：结果与耗时
         RoutingFlowRow(
             dotColor = resultColor,
             label = "结果",
-            detail = "$resultText · HTTP ${call.httpStatus} · 耗时 $durationText · tokens ${call.promptTokens}→${call.completionTokens}",
+            detail = "$resultText · HTTP ${call.httpStatus} · 耗时 $durationText",
+        )
+
+        // 行 4：开销 tokens
+        RoutingFlowRow(
+            dotColor = dotNeutral,
+            label = "开销",
+            detail = "tokens $promptTokensStr → $completionTokensStr",
         )
     }
 }
@@ -819,6 +935,7 @@ private fun resolveContextWindow(
 /**
  * 块 3 与 块 4：上下文容量监控 + 明细列表（近 50 次请求按模型聚合）
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
     val recentCalls = remember(state.calls) { state.calls.take(50) }
@@ -866,40 +983,34 @@ private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
         // 块 3：左右双指标
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 左列：输入 tokens / contextWindow
+            // 左列：输入 tokens，下方整合成一行小字说明上限与剩余
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = if (latestCall != null) formatTokens(promptTokens) else "—",
-                        style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace),
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = if (contextWindow > 0L) " / ${formatTokens(contextWindow)}" else " / —",
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 3.dp, start = 2.dp),
-                    )
-                }
                 Text(
-                    text = if (contextWindow > 0L && contextWindow >= promptTokens) {
-                        "剩余 ${formatTokens(contextWindow - promptTokens)}"
-                    } else if (contextWindow > 0L) {
-                        "已超出上限"
-                    } else {
-                        "剩余 未知"
-                    },
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    text = if (latestCall != null) formatTokens(promptTokens) else "—",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace),
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                val remainingText = if (contextWindow > 0L && contextWindow >= promptTokens) {
+                    "剩余 ${formatTokens(contextWindow - promptTokens)}"
+                } else if (contextWindow > 0L) {
+                    "超出上限"
+                } else {
+                    "剩余未知"
+                }
+                val limitText = if (contextWindow > 0L) "上限 ${formatTokens(contextWindow)}" else "上限未知"
+                Text(
+                    text = "$limitText · $remainingText",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
             // 右列：缓存命中率
             Column(
-                modifier = Modifier.weight(1f),
                 horizontalAlignment = Alignment.End,
             ) {
                 val hitRateText = if (promptTokens > 0L) {
@@ -915,7 +1026,7 @@ private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
                 )
                 Text(
                     text = "缓存命中",
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -939,8 +1050,8 @@ private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
             )
         }
 
-        // 分段进度条
-        if (totalPromptTokens > 0L) {
+        // 分段进度条与图例：无数据不画条；只有 1 个模型时省去分段条与图例（直接看下方明细，消除重复冗余）；≥2 个模型时才画条和图例
+        if (totalPromptTokens > 0L && aggregated.size > 1) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -965,11 +1076,11 @@ private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
                 }
             }
 
-            // 图例一览（最多 4 项）
-            Row(
+            // 图例一览（FlowRow 自适应换行，每项完整展示）
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 aggregated.take(4).forEachIndexed { index, item ->
                     val color = palette[index % palette.size]
@@ -979,7 +1090,7 @@ private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
                     ) {
                         Box(Modifier.size(6.dp).clip(CircleShape).background(color))
                         Text(
-                            text = "${item.model} (${formatTokens(item.promptTokens)})",
+                            text = "${item.model.substringAfterLast('/')} (${formatTokens(item.promptTokens)})",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -994,7 +1105,7 @@ private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
                     )
                 }
             }
-        } else {
+        } else if (totalPromptTokens <= 0L) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()

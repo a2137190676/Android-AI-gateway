@@ -314,6 +314,8 @@ data class AppUiState(
     val updateDownload: UpdateDownload? = null,
     /** 是否自动检查更新（启动时每天最多一次）。 */
     val autoCheckUpdate: Boolean = true,
+    /** 当前网关在途请求列表（轻量快照）。 */
+    val activeRequests: List<dev.aigw.core.gateway.ActiveRequest> = emptyList(),
 ) {
     /** 某个供应商的账号。 */
     fun accountsOf(providerId: String): List<AccountStatus> = accounts.filter { it.providerId == providerId }
@@ -393,7 +395,22 @@ class AppViewModel(
     @Volatile
     private var modelsFetchedAt = 0L
 
+    private var lastActiveSignature = ""
+    private val activeRequestsListener: (List<dev.aigw.core.gateway.ActiveRequest>) -> Unit = { list ->
+        val sig = list.joinToString(";") { "${it.id}:${it.providerId}:${it.phase}" }
+        if (sig != lastActiveSignature) {
+            lastActiveSignature = sig
+            viewModelScope.launch(Dispatchers.Main.immediate) {
+                _state.value = _state.value.copy(activeRequests = list)
+            }
+        }
+    }
+
     init {
+        engine.activeRequests.addListener(activeRequestsListener)
+        val initialActive = engine.activeRequests.snapshot()
+        lastActiveSignature = initialActive.joinToString(";") { "${it.id}:${it.providerId}:${it.phase}" }
+        _state.value = _state.value.copy(activeRequests = initialActive)
         // 登录在浏览器里完成、由网关的回调监听落池，这里接住通知刷新界面。
         // 只有账号集合真的变了才重拉模型：刷新凭证（refreshAccount 回存）也会触发本回调，
         // 那类更新不影响模型列表，重复拉取只是白白多打一轮上游。
@@ -418,6 +435,7 @@ class AppViewModel(
         accounts.joinToString("|") { "${it.providerId}/${it.uid}/${it.disabled}/${it.enabled}" }
 
     override fun onCleared() {
+        engine.activeRequests.removeListener(activeRequestsListener)
         engine.onAccountsChanged = null
         engine.setStartupDataReadyListener(null)
     }
