@@ -340,12 +340,19 @@ class RaccoonProvider(
         var nickname = jwtClaim(accessToken, "name")
         var pro = false
         var orgCode = ""
-        val userId = jwtClaim(accessToken, "iss")
+        var userId = ""
         val userInfo = runCatching { fetchUserInfo(accessToken) }.getOrNull()
         if (userInfo != null) {
             nickname = userInfo.firstString("name", "nickname", "nick_name", "username").ifEmpty { nickname }
             pro = userInfo.boolOrNull("pro") == true
             orgCode = firstOrgCode(userInfo)
+            userId = userInfo.firstString("userId", "user_id", "uid", "sub")
+        }
+        // 不能用 JWT 的 iss 当用户 id：iss 是签发方，同站点所有用户同一个值，拿它做账号池主键
+        // （key = providerId/uid）会让后登录的账号直接覆盖前一个，表现为「登另一个会取代第一个」。
+        // 取法与 CodeBuddy 一致：先 user_info 的用户字段，再退到 JWT 的用户声明。
+        if (userId.isEmpty()) {
+            userId = jwtClaim(accessToken, "user_id", "userId", "uid", "sub")
         }
 
         val credential = Credential(

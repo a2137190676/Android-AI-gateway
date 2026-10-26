@@ -7,9 +7,11 @@ import dev.aigw.core.provider.ACTION_CHECKIN
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.ProviderAccount
 import java.net.InetSocketAddress
+import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -486,5 +488,83 @@ class RaccoonProviderTest {
             assertTrue(sse.contains("\"finish_reason\":\"stop\""), sse)
             assertTrue(sse.trimEnd().endsWith("data: [DONE]"), sse)
         }
+    }
+
+    // ------------------------------------------------------------------ 多账号登录
+
+    /**
+     * 同一 issuer 下的两个不同用户登录后必须得到不同 uid。
+     *
+     * 回归：从前拿 JWT 的 `iss`（签发方，全站同一个值）当用户 id，于是第二个账号算出的 uid
+     * 与第一个相同，账号池按 providerId/uid 去重时后一个 upsert 直接覆盖前一个，
+     * 表现为「小浣熊只能登录一个号，登另一个会取代第一个」（issue #5）。
+     */
+    @Test
+    fun `同一 issuer 下的两个账号登录后 uid 不同`() {
+        val iss = "https://xiaohuanxiong.com"
+        val tokenA = fakeJwt("iss" to iss, "sub" to "user-1001")
+        val tokenB = fakeJwt("iss" to iss, "sub" to "user-2002")
+        // user_info 故意不回任何用户标识，逼出「JWT 用户声明」这条兵底路径
+        withLoginUpstream(
+            mapOf("code-a" to tokenA, "code-b" to tokenB),
+            infoBody = """{"code":0,"data":{}}""",
+        ) { base ->
+            val provider = RaccoonProvider(host = base)
+            val first = provider.completeWebLogin("http://127.0.0.1/cb?authorization_code=code-a")
+            val second = provider.completeWebLogin("http://127.0.0.1/cb?authorization_code=code-b")
+            assertNotEquals(first.uid, second.uid, "两个不同账号不能共用 uid，否则后登录的会覆盖前一个")
+            assertNotEquals(iss, first.uid, "uid 不能是 issuer")
+        }
+    }
+
+    @Test
+    fun `user_info 回传 userId 时优先用它当 uid`() {
+        val token = fakeJwt("iss" to "https://xiaohuanxiong.com", "sub" to "jwt-sub-1")
+        withLoginUpstream(
+            mapOf("c" to token),
+            infoBody = """{"code":0,"data":{"userId":"real-42"}}""",
+        ) { base ->
+            val acc = RaccoonProvider(host = base).completeWebLogin("http://127.0.0.1/cb?authorization_code=c")
+            assertEquals("real-42", acc.uid)
+        }
+    }
+
+    /** 假上游：登录换 token 按 authorization_code 区分用户，user_info 回固定体。 */
+    private fun withLoginUpstream(
+        tokensByCode: Map<String, String>,
+        infoBody: String,
+        block: (baseUrl: String) -> Unit,
+    ) {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext(RaccoonProvider.PATH_LOGIN_WITH_CODE) { exchange ->
+            val request = exchange.requestBody.readBytes().toString(Charsets.UTF_8)
+            val code = runCatching {
+                JsonParser.parseString(request).asJsonObject.get("authorization_code").asString
+            }.getOrDefault("")
+            respond(exchange, """{"code":0,"data":{"access_token":"${tokensByCode[code].orEmpty()}","refresh_token":"r"}}""")
+        }
+        server.createContext(RaccoonProvider.PATH_USER_INFO) { exchange ->
+            respond(exchange, infoBody)
+        }
+        server.start()
+        try {
+            block("http://127.0.0.1:${server.address.port}")
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    private fun respond(exchange: com.sun.net.httpserver.HttpExchange, body: String) {
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        exchange.responseHeaders.add("Content-Type", "application/json")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+    }
+
+    /** 造一个未签名 JWT：只要求 payload 能被 Base64 解开（解析不校验签名）。 */
+    private fun fakeJwt(vararg claims: Pair<String, String>): String {
+        val payload = JsonObject().apply { claims.forEach { (k, v) -> addProperty(k, v) } }.toString()
+        val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray(Charsets.UTF_8))
+        return "eyJhbGciOiJIUzI1NiJ9.$encoded.sig"
     }
 }
