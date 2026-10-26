@@ -43,10 +43,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -70,6 +76,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.ui.theme.LocalAppColors
+import dev.aigw.core.provider.RoutedModel
+import dev.aigw.core.usage.CallRecord
+import dev.aigw.core.usage.CallStatus
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.util.startOfDay
 import java.text.SimpleDateFormat
@@ -434,6 +443,22 @@ private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modi
 
         // 分段进度条：各供应商可用账号占比（平滑动画过渡）
         ProviderAccountDistributionBar(state)
+
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant,
+            modifier = Modifier.padding(vertical = 2.dp),
+        )
+
+        // 块 2：最近一个请求的路由流水
+        RecentCallRoutingFlow(state.calls.firstOrNull())
+
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant,
+            modifier = Modifier.padding(vertical = 2.dp),
+        )
+
+        // 块 3 与 块 4：上下文容量监控 + 明细列表（按模型聚合近 50 次请求）
+        ContextCapacityAndModelBreakdown(state)
     }
 }
 
@@ -648,6 +673,391 @@ private fun ProviderAccountDistributionBar(state: AppUiState) {
                     .clip(RoundedCornerShape(3.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
             )
+        }
+    }
+}
+
+/**
+ * 块 2：最近一个请求的路由流水。
+ * 三行流水（小圆点 + 文案）：
+ * 1. 客户端请求 <model>
+ * 2. 路由到 <PROVIDER·大写> · <accountNickname 或 accountUid>
+ * 3. 结果 <成功/失败/中断> · HTTP <httpStatus> · 耗时 <x.x s> · tokens <in>→<out>
+ */
+@Composable
+private fun RecentCallRoutingFlow(call: CallRecord?) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "最近路由记录 · LATEST DISPATCH",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.8.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (call == null) {
+            Text(
+                text = "暂无请求记录",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+            return@Column
+        }
+
+        val dotNeutral = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        val resultColor = when (call.status) {
+            CallStatus.SUCCESS -> MaterialTheme.colorScheme.tertiary
+            CallStatus.FAILED -> MaterialTheme.colorScheme.error
+            CallStatus.ABORTED -> Color(0xFFC97F0A)
+        }
+        val resultText = when (call.status) {
+            CallStatus.SUCCESS -> "成功"
+            CallStatus.FAILED -> "失败"
+            CallStatus.ABORTED -> "客户端中断"
+        }
+
+        val modelName = call.model.ifEmpty { "未记录" }
+        val accountDisplay = call.accountNickname.ifEmpty { call.accountUid.ifEmpty { "默认账号" } }
+        val durationSec = String.format(Locale.US, "%.1fs", call.durationMillis / 1000.0)
+
+        // 行 1：客户端请求
+        RoutingFlowRow(
+            dotColor = dotNeutral,
+            label = "客户端请求",
+            detail = modelName,
+        )
+
+        // 行 2：路由去向
+        RoutingFlowRow(
+            dotColor = LocalAppColors.current.goldStart,
+            label = "路由到",
+            detail = "${call.providerId.uppercase()} · $accountDisplay",
+        )
+
+        // 行 3：结果与开销
+        RoutingFlowRow(
+            dotColor = resultColor,
+            label = "结果",
+            detail = "$resultText · HTTP ${call.httpStatus} · 耗时 $durationSec · tokens ${call.promptTokens}→${call.completionTokens}",
+        )
+    }
+}
+
+@Composable
+private fun RoutingFlowRow(dotColor: Color, label: String, detail: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/** 单个模型的近 50 次请求聚合统计。 */
+private data class ModelTokenAggregation(
+    val model: String,
+    val requests: Int,
+    val promptTokens: Long,
+)
+
+/**
+ * 在 state.models 里匹配 contextWindow：
+ * 1. 用 providerId + model (完全匹配 ProviderModel.id 或 name，并支持剥离 routePrefix)；
+ * 2. 退化为任意 provider 下匹配模型名；
+ * 3. 0 或未匹配返回 0L (表示未知)。
+ */
+private fun resolveContextWindow(
+    providerId: String,
+    modelName: String,
+    models: List<RoutedModel>,
+): Long {
+    if (modelName.isEmpty() || models.isEmpty()) return 0L
+    val cleanName = modelName.substringAfterLast('/')
+
+    // 1. 精确匹配同 providerId
+    val matched = models.firstOrNull { routed ->
+        routed.providerId.equals(providerId, ignoreCase = true) &&
+            (routed.model.id.equals(modelName, ignoreCase = true) ||
+                routed.model.id.equals(cleanName, ignoreCase = true) ||
+                routed.model.name.equals(cleanName, ignoreCase = true) ||
+                routed.fullId.equals(modelName, ignoreCase = true))
+    }
+    if (matched != null && matched.model.contextWindow > 0L) {
+        return matched.model.contextWindow
+    }
+
+    // 2. 任意 provider 跨域同名匹配
+    val fallback = models.firstOrNull { routed ->
+        routed.model.id.equals(cleanName, ignoreCase = true) ||
+            routed.model.name.equals(cleanName, ignoreCase = true)
+    }
+    if (fallback != null && fallback.model.contextWindow > 0L) {
+        return fallback.model.contextWindow
+    }
+    return 0L
+}
+
+/**
+ * 块 3 与 块 4：上下文容量监控 + 明细列表（近 50 次请求按模型聚合）
+ */
+@Composable
+private fun ContextCapacityAndModelBreakdown(state: AppUiState) {
+    val recentCalls = remember(state.calls) { state.calls.take(50) }
+    val latestCall = recentCalls.firstOrNull()
+
+    // 块 3：大数字计算
+    val promptTokens = latestCall?.promptTokens ?: 0L
+    val cachedTokens = latestCall?.cachedTokens ?: 0L
+    val contextWindow = remember(latestCall, state.models) {
+        if (latestCall != null) {
+            resolveContextWindow(latestCall.providerId, latestCall.model, state.models)
+        } else {
+            0L
+        }
+    }
+
+    // 近 50 次聚合列表（按 promptTokens 倒序）
+    val aggregated = remember(recentCalls) {
+        recentCalls
+            .groupBy { it.model.ifEmpty { "未命名模型" } }
+            .map { (model, calls) ->
+                ModelTokenAggregation(
+                    model = model,
+                    requests = calls.size,
+                    promptTokens = calls.sumOf { it.promptTokens },
+                )
+            }
+            .sortedByDescending { it.promptTokens }
+    }
+    val totalPromptTokens = remember(aggregated) { aggregated.sumOf { it.promptTokens } }
+
+    val palette = LocalAppColors.current.providerPalette
+    var expanded by remember { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // 标题说明
+        Text(
+            text = "上下文容量与分布 · CONTEXT & MODELS",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.8.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // 块 3：左右双指标
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // 左列：输入 tokens / contextWindow
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = if (latestCall != null) formatTokens(promptTokens) else "—",
+                        style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = if (contextWindow > 0L) " / ${formatTokens(contextWindow)}" else " / —",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 3.dp, start = 2.dp),
+                    )
+                }
+                Text(
+                    text = if (contextWindow > 0L && contextWindow >= promptTokens) {
+                        "剩余 ${formatTokens(contextWindow - promptTokens)}"
+                    } else if (contextWindow > 0L) {
+                        "已超出上限"
+                    } else {
+                        "剩余 未知"
+                    },
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // 右列：缓存命中率
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.End,
+            ) {
+                val hitRateText = if (promptTokens > 0L) {
+                    String.format(Locale.US, "%.1f%%", (cachedTokens.toDouble() / promptTokens) * 100.0)
+                } else {
+                    "—"
+                }
+                Text(
+                    text = hitRateText,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace),
+                    fontWeight = FontWeight.Bold,
+                    color = if (cachedTokens > 0L) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "缓存命中",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        // 分段条标题：严格口径
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "近 50 次请求的输入 token 按模型",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = if (totalPromptTokens > 0L) formatTokens(totalPromptTokens) else "暂无 token 数据",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // 分段进度条
+        if (totalPromptTokens > 0L) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                aggregated.forEachIndexed { index, item ->
+                    val fraction = item.promptTokens.toFloat() / totalPromptTokens
+                    val animatedFraction by animateFloatAsState(
+                        targetValue = fraction,
+                        animationSpec = tween(Motion.BAR_FILL_MILLIS, easing = FastOutSlowInEasing),
+                        label = "modelTokenBar$index",
+                    )
+                    val color = palette[index % palette.size]
+                    Box(
+                        modifier = Modifier
+                            .weight(animatedFraction.coerceAtLeast(0.001f))
+                            .fillMaxSize()
+                            .background(color),
+                    )
+                }
+            }
+
+            // 图例一览（最多 4 项）
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                aggregated.take(4).forEachIndexed { index, item ->
+                    val color = palette[index % palette.size]
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+                        Text(
+                            text = "${item.model} (${formatTokens(item.promptTokens)})",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                if (aggregated.size > 4) {
+                    Text(
+                        text = "+${aggregated.size - 4}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            )
+        }
+
+        // 块 4：明细列表（可折叠）
+        if (aggregated.isNotEmpty()) {
+            val visibleCount = if (expanded) aggregated.size else 5
+            val displayItems = aggregated.take(visibleCount)
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                displayItems.forEachIndexed { index, item ->
+                    val color = palette[index % palette.size]
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+                        Text(
+                            text = item.model,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${item.requests} 次",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = formatTokens(item.promptTokens),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+
+                // 展开/收起按钮
+                if (aggregated.size > 5) {
+                    Text(
+                        text = if (expanded) "收起" else "显示全部 ${aggregated.size} 项",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LocalAppColors.current.goldText,
+                        modifier = Modifier
+                            .clickable { expanded = !expanded }
+                            .padding(vertical = 4.dp),
+                    )
+                }
+            }
         }
     }
 }
