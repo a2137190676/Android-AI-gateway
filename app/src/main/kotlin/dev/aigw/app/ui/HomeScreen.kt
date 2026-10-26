@@ -26,6 +26,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -45,8 +46,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.State
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,10 +58,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -66,6 +70,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -388,21 +394,17 @@ private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modi
         "暂无配置账号"
     }
 
-    // 在途流光动效：仅在网关运行且有在途请求时循环播放
-    val flowPhase = if (hasActive) {
-        val transition = rememberInfiniteTransition(label = "topologyActiveFlow")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 20f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1000, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "activeFlowPhase",
-        ).value
-    } else {
-        0f
-    }
+    // 在途流光：曲线上的光斑进度 0f→1f，只在绘制阶段读取，不逐帧重组。
+    // 1.6s 一趟比原来的 1s 慢一些，长曲线上的光斑才不会显得在跳。
+    val flowPhase: State<Float> = rememberInfiniteTransition(label = "topologyFlow").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "topologyFlowPhase",
+    )
 
     SectionCard(modifier = modifier) {
         // 顶部小节头 + 呼吸指示灯 + TODAY 大数字
@@ -513,60 +515,72 @@ private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modi
             val displayBranches = if (branches.size > 4) branches.take(maxVisibleBranches) else branches
             val remainingCount = if (branches.size > 4) branches.size - maxVisibleBranches else 0
 
-            Row(
+            // 连线要按各行的真实位置扇出，先把容器、中枢与每一行在 root 坐标系里的矩形量出来
+            var containerRect by remember { mutableStateOf<Rect?>(null) }
+            var hubRect by remember { mutableStateOf<Rect?>(null) }
+            val rowRects = remember { mutableStateMapOf<String, Rect>() }
+            var otherRect by remember { mutableStateOf<Rect?>(null) }
+            val branchById = remember(branches) { branches.associateBy { it.providerId } }
+
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .onGloballyPositioned { containerRect = it.boundsInRoot() },
             ) {
-                // 左侧中枢节点：网关 Hub
-                GatewayHubNode(
+                // 连线画在最底层：曲线从中枢右缘扇出、终点落在各节点行左缘，端点被卡片盖住
+                TopologyWiresCanvas(
+                    container = containerRect,
+                    hub = hubRect,
+                    rows = rowRects,
+                    branches = branchById,
+                    other = otherRect,
                     isRunning = isRunning,
-                    port = state.port,
                     gold = gold,
                     goldEnd = goldEnd,
-                    hasActive = hasActive,
+                    phase = flowPhase,
                 )
 
-                // 右侧分发分支列
-                Column(
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 0.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    displayBranches.forEach { branch ->
-                        val branchColor = palette[branch.colorIndex % palette.size]
-                        ProviderBranchRow(
-                            branch = branch,
-                            branchColor = branchColor,
-                            gold = gold,
-                            goldEnd = goldEnd,
-                            isRunning = isRunning,
-                            flowPhase = flowPhase,
-                        )
-                    }
+                    // 左侧中枢节点：网关 Hub，垂直居中于整列分支
+                    GatewayHubNode(
+                        isRunning = isRunning,
+                        port = state.port,
+                        gold = gold,
+                        goldEnd = goldEnd,
+                        hasActive = hasActive,
+                        modifier = Modifier.onGloballyPositioned { hubRect = it.boundsInRoot() },
+                    )
 
-                    if (remainingCount > 0) {
-                        val otherUsable = branches.drop(maxVisibleBranches).sumOf { it.usableAccounts }
-                        val otherHasActive = branches.drop(maxVisibleBranches).any { it.hasActiveRequest }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            BranchConnectorCanvas(
-                                active = otherHasActive && isRunning,
-                                phase = flowPhase,
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                                activeColor = gold,
-                                dotColor = goldEnd,
-                                strokeWidthDp = 1.2f,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(20.dp),
+                    // 右侧分发分支列：左侧留出连线走廊，节点不再自己画线
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 44.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        displayBranches.forEach { branch ->
+                            val branchColor = palette[branch.colorIndex % palette.size]
+                            ProviderBranchRow(
+                                branch = branch,
+                                branchColor = branchColor,
+                                gold = gold,
+                                isRunning = isRunning,
+                                modifier = Modifier.onGloballyPositioned {
+                                    rowRects[branch.providerId] = it.boundsInRoot()
+                                },
                             )
+                        }
+
+                        if (remainingCount > 0) {
+                            val otherUsable = branches.drop(maxVisibleBranches).sumOf { it.usableAccounts }
                             Box(
                                 modifier = Modifier
+                                    .onGloballyPositioned { otherRect = it.boundsInRoot() }
                                     .clip(RoundedCornerShape(6.dp))
                                     .background(MaterialTheme.colorScheme.surfaceContainerHighest)
                                     .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -602,131 +616,143 @@ private fun LiveRoutingTopologyCard(state: AppUiState, modifier: Modifier = Modi
 }
 
 /**
- * 拓扑单个分支行：连线（顶到节点边缘无空隙）+ 供应商标签胶囊
+ * 拓扑单个分支行：供应商节点胶囊。
+ *
+ * 连线不再由行内自己画——那正是从前「线悬空、没接到网关」的来源：每行的线只从自己左缘起笔，
+ * 而网关卡片只有一行高，除正中一行外的线左侧都对着空白。现在曲线统一由 [TopologyWiresCanvas]
+ * 从网关右缘扇出。
  */
 @Composable
 private fun ProviderBranchRow(
     branch: TopologyProviderBranch,
     branchColor: Color,
     gold: Color,
-    goldEnd: Color,
     isRunning: Boolean,
-    flowPhase: Float,
+    modifier: Modifier = Modifier,
 ) {
     val isBranchActive = branch.hasActiveRequest && isRunning
-    val lineStroke = (1.5f + branch.weight * 2.5f).coerceIn(1.5f, 3.5f)
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // 连线：直接贴到左侧和右侧，两端贴合消除间隙
-        BranchConnectorCanvas(
-            active = isBranchActive,
-            phase = flowPhase,
-            color = if (isRunning) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-            activeColor = gold,
-            dotColor = goldEnd,
-            strokeWidthDp = lineStroke,
-            modifier = Modifier
-                .weight(1f)
-                .height(24.dp),
-        )
-
-        // 右侧供应商节点：有在途请求时金色高亮发光
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .drawBehind {
-                    if (isBranchActive) {
-                        drawRoundRect(
-                            color = gold.copy(alpha = 0.15f),
-                            size = size,
-                            cornerRadius = CornerRadius(8.dp.toPx()),
-                        )
-                    }
-                }
-                .background(MaterialTheme.colorScheme.surface)
-                .border(
-                    width = if (isBranchActive) 1.5.dp else 1.dp,
-                    color = if (isBranchActive) gold else branchColor.copy(alpha = 0.45f),
-                    shape = RoundedCornerShape(8.dp),
-                )
-                .padding(horizontal = 10.dp, vertical = 5.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(branchColor))
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            text = branch.displayName,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isBranchActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                            maxLines = 1,
-                        )
-                        if (branch.activeCount > 0) {
-                            Text(
-                                text = "(${branch.activeCount}在途)",
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, fontFamily = FontFamily.Monospace),
-                                color = goldEnd,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                    }
-                    Text(
-                        text = "${branch.usableAccounts}/${branch.totalAccounts} 可用",
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .drawBehind {
+                if (isBranchActive) {
+                    drawRoundRect(
+                        color = gold.copy(alpha = 0.15f),
+                        size = size,
+                        cornerRadius = CornerRadius(8.dp.toPx()),
                     )
                 }
+            }
+            .background(MaterialTheme.colorScheme.surface)
+            .border(
+                width = if (isBranchActive) 1.5.dp else 1.dp,
+                color = if (isBranchActive) gold else branchColor.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(8.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(branchColor))
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = branch.displayName,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isBranchActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                        maxLines = 1,
+                    )
+                    if (branch.activeCount > 0) {
+                        Text(
+                            text = "(${branch.activeCount}在途)",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, fontFamily = FontFamily.Monospace),
+                            color = gold,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                Text(
+                    text = "${branch.usableAccounts}/${branch.totalAccounts} 可用",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
         }
     }
 }
 
 /**
- * 分支连线 Canvas：连线起点是 0f（紧贴网关中枢），终点是 size.width（紧贴右侧分支节点），消除间隙
+ * 拓扑连线层：从中枢节点右缘向每个分支行的左缘扇出贝塞尔曲线。
+ *
+ * - 线宽与透明度都取分发权重（0.08–1.0）：旧实现只把权重映射到 1.7–4px 且透明度一致，肉眼分不出。
+ * - 有在途请求的分支沿曲线跑一个光斑，进度用 sin 包络在两端淡入淡出，避免端点处突然出现。
+ * - 进度以 [State] 传入、在绘制阶段读取，因此每帧只重绘，不重组拓扑卡。
  */
 @Composable
-private fun BranchConnectorCanvas(
-    active: Boolean,
-    phase: Float,
-    color: Color,
-    activeColor: Color,
-    dotColor: Color,
-    strokeWidthDp: Float,
-    modifier: Modifier = Modifier,
+private fun BoxScope.TopologyWiresCanvas(
+    container: Rect?,
+    hub: Rect?,
+    rows: Map<String, Rect>,
+    branches: Map<String, TopologyProviderBranch>,
+    other: Rect?,
+    isRunning: Boolean,
+    gold: Color,
+    goldEnd: Color,
+    phase: State<Float>,
 ) {
-    Canvas(modifier = modifier) {
-        val centerY = size.height / 2f
-        val strokePx = strokeWidthDp.dp.toPx()
+    val box = container ?: return
+    val hubBox = hub ?: return
+    val idleColor = MaterialTheme.colorScheme.outlineVariant
+    Canvas(modifier = Modifier.matchParentSize()) {
+        val startX = hubBox.right - box.left - 2.dp.toPx()
+        val startY = hubBox.center.y - box.top
+        val progress = phase.value
 
-        // 底层连线（全宽，两端 0f 到 size.width 紧贴节点边界）
-        drawLine(
-            color = if (active) activeColor else color,
-            start = Offset(0f, centerY),
-            end = Offset(size.width, centerY),
-            strokeWidth = strokePx,
-            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f), if (active) phase else 0f),
-            cap = StrokeCap.Round,
-        )
+        val targets = ArrayList<Triple<Rect, Float, Boolean>>()
+        rows.forEach { (pid, rect) ->
+            val branch = branches[pid] ?: return@forEach
+            targets.add(Triple(rect, branch.weight, branch.hasActiveRequest && isRunning))
+        }
+        other?.let { targets.add(Triple(it, 0.08f, false)) }
 
-        // 在途活跃时沿连线流动光斑
-        if (active) {
-            val progress = (phase / 20f).coerceIn(0f, 1f)
-            drawCircle(
-                color = dotColor,
-                radius = (strokePx + 1.5.dp.toPx()).coerceAtLeast(2.5.dp.toPx()),
-                center = Offset(size.width * progress, centerY),
+        targets.forEach { (rect, weight, active) ->
+            val endX = rect.left - box.left
+            val endY = rect.center.y - box.top
+            val dx = endX - startX
+            val path = Path().apply {
+                moveTo(startX, startY)
+                cubicTo(startX + dx * 0.45f, startY, endX - dx * 0.45f, endY, endX, endY)
+            }
+            val stroke = (1.1f + weight * 2.4f).dp.toPx()
+            drawPath(
+                path = path,
+                color = (if (active) gold else idleColor).copy(alpha = 0.5f + weight * 0.5f),
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
             )
+            if (active) {
+                val measure = PathMeasure().apply { setPath(path, false) }
+                if (measure.length > 0f) {
+                    val envelope = kotlin.math.sin(progress * kotlin.math.PI).toFloat()
+                    val center = measure.getPosition(progress * measure.length)
+                    drawCircle(
+                        color = goldEnd.copy(alpha = 0.28f * envelope),
+                        radius = stroke + 4.dp.toPx(),
+                        center = center,
+                    )
+                    drawCircle(
+                        color = goldEnd.copy(alpha = envelope),
+                        radius = stroke / 2f + 2.dp.toPx(),
+                        center = center,
+                    )
+                }
+            }
         }
     }
 }
@@ -741,9 +767,10 @@ private fun GatewayHubNode(
     gold: Color,
     goldEnd: Color,
     hasActive: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(MaterialTheme.shapes.medium)
             .drawBehind {
                 if (isRunning) {
@@ -851,10 +878,16 @@ private fun RecentCallRoutingFlow(call: CallRecord?) {
         )
 
         // 行 4：开销 tokens
+        val tokenDetail = buildString {
+            append("输入 $promptTokensStr · 输出 $completionTokensStr")
+            if (call.cachedTokens > 0) {
+                append(" · 缓存 ${formatTokens(call.cachedTokens)}")
+            }
+        }
         RoutingFlowRow(
             dotColor = dotNeutral,
-            label = "开销",
-            detail = "tokens $promptTokensStr → $completionTokensStr",
+            label = "Token",
+            detail = tokenDetail,
         )
     }
 }
