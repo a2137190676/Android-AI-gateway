@@ -8,7 +8,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import androidx.core.app.NotificationManagerCompat
 import dev.aigw.app.AiGatewayApp
 import dev.aigw.app.MainActivity
@@ -42,10 +41,13 @@ object LiveStatusNotifier {
      */
     private const val EXTRA_REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
 
-    /** 时间文案（已用 x.xs）的最快刷新间隔：低于 1s 会被系统降频，没有意义。 */
-    private const val TICK_INTERVAL_MS = 1000L
-
-    /** 无在途时的宽限：连续两笔请求之间的空洞不闪一下通知。 */
+    /**
+     * 无在途时的宽限：连续两笔请求之间的空洞不闪一下通知。
+     *
+     * 不用定时器重发来刷新「已用时长」——那种每秒重发会让通知/状态栏胶囊看着发抖，
+     * 而且每帧都要走一次 IPC。时间交给系统的 chronometer 自己走，我方只在
+     * 「谁在途 + 各自阶段」变化时重发（见 [onChanged]）。
+     */
     private const val CANCEL_GRACE_MS = 1500L
 
     /** 状态栏胶囊最多 96dp，超长只会退化成图标，所以这里主动截断。 */
@@ -64,22 +66,12 @@ object LiveStatusNotifier {
     private var source: ActiveRequests? = null
     private var latest: List<ActiveRequest> = emptyList()
     private var lastSignature = ""
-    private var lastPostAt = 0L
     private var promotionLogged = false
     private var log: (String) -> Unit = {}
 
     private val listener: (List<ActiveRequest>) -> Unit = { list -> handler.post { onChanged(list) } }
 
     private val cancelRunnable = Runnable { removeNotification() }
-
-    /** 空闲时不跑：只在有在途请求时自我续期。 */
-    private val tickRunnable = object : Runnable {
-        override fun run() {
-            if (!started || latest.isEmpty() || !enabled) return
-            publish(latest)
-            handler.postDelayed(this, TICK_INTERVAL_MS)
-        }
-    }
 
     /**
      * 开始跟踪在途请求（由前台服务在启动时调用）。
@@ -125,10 +117,7 @@ object LiveStatusNotifier {
             removeNotification()
             return
         }
-        if (started && latest.isNotEmpty()) {
-            publish(latest)
-            scheduleTick()
-        }
+        if (started && latest.isNotEmpty()) publish(latest)
     }
 
     // ------------------------------------------------------------------ 内部（均在主线程）
@@ -141,29 +130,18 @@ object LiveStatusNotifier {
         if (!enabled) return
         handler.removeCallbacks(cancelRunnable)
         if (list.isEmpty()) {
-            handler.removeCallbacks(tickRunnable)
             handler.postDelayed(cancelRunnable, CANCEL_GRACE_MS)
             return
         }
-        val signature = signatureOf(list)
-        // 阶段变化立即更新；仅「已用 x.xs」变化时最快要等 TICK_INTERVAL_MS，
-        // 否则每个数据块都刷一次会被系统降频，反而更不准。
-        if (signature != lastSignature || SystemClock.uptimeMillis() - lastPostAt >= TICK_INTERVAL_MS) {
-            publish(list)
-        }
-        scheduleTick()
-    }
-
-    private fun scheduleTick() {
-        handler.removeCallbacks(tickRunnable)
-        handler.postDelayed(tickRunnable, TICK_INTERVAL_MS)
+        // 只在「谁在途 + 各自阶段」变化时重发：时长由系统 chronometer 自己走，
+        // 不靠每秒重发（那会让通知与胶囊看着发抖）。
+        if (signatureOf(list) != lastSignature) publish(list)
     }
 
     private fun publish(list: List<ActiveRequest>) {
         if (!started || !enabled || list.isEmpty()) return
         val context = appContext ?: return
         lastSignature = signatureOf(list)
-        lastPostAt = SystemClock.uptimeMillis()
         val compat = NotificationManagerCompat.from(context)
         // 通知权限被拒时静默跳过（发也发不出去），不影响网关转发。
         if (!compat.areNotificationsEnabled()) {
@@ -198,7 +176,7 @@ object LiveStatusNotifier {
         val model = primary.clientModel.ifBlank { UNKNOWN_MODEL }
         val title = if (list.size == 1) "正在处理 $model" else "${list.size} 个请求进行中"
         val account = primary.nickname.ifBlank { primary.uid }.ifBlank { "未知账号" }
-        val text = "${primary.providerId.uppercase(Locale.ROOT)} · $account · 已用 ${elapsedSeconds(primary)}s"
+        val text = "${primary.providerId.uppercase(Locale.ROOT)} · $account"
 
         val open = PendingIntent.getActivity(
             context,
@@ -215,7 +193,10 @@ object LiveStatusNotifier {
             .setContentText(text)
             .setContentIntent(open)
             .setOnlyAlertOnce(true)
-            .setShowWhen(false)
+            // 时长交给系统的 chronometer 自己走：不再每秒重发通知（那会让通知与状态栏胶囊看着发抖）
+            .setShowWhen(true)
+            .setWhen(primary.startedAtMillis)
+            .setUsesChronometer(true)
 
         // 提升为 Live Updates（等效于 API 36.1 的 setRequestPromotedOngoing(true)）
         builder.extras.putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true)
@@ -261,11 +242,6 @@ object LiveStatusNotifier {
         // 客户端模型名可能带 "provider/" 前缀，胶囊上只留模型本体
         val model = list.first().clientModel.substringAfterLast('/').ifBlank { UNKNOWN_MODEL }
         return if (model.length <= SHORT_TEXT_MAX) model else model.take(SHORT_TEXT_MAX - 1) + "…"
-    }
-
-    private fun elapsedSeconds(request: ActiveRequest): String {
-        val seconds = (System.currentTimeMillis() - request.startedAtMillis).coerceAtLeast(0L) / 1000.0
-        return String.format(Locale.ROOT, "%.1f", seconds)
     }
 
     /** 记录一次「为什么（没）被提升」。只写日志，不做开关：发不发这条通知与它无关。 */
